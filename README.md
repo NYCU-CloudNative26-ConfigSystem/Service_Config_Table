@@ -78,15 +78,38 @@ cp .env.example .env
 2. **啟動服務**
 
 ```bash
-docker-compose up -d
+docker compose up -d --build
 ```
 
-預設綁定到主機 `18001` 埠（避免衝突）。
+預設會直接將主機埠 `18001`（可由 `.env` 的 `APP_HOST_PORT` 覆蓋）映射到容器 `18001`。
+可用以下命令確認：
+
+```bash
+docker compose ps
+# 預期看到類似：0.0.0.0:18001->18001/tcp
+```
 
 3. **訪問應用**
 
 - API 文檔：http://localhost:18001/docs
 - 健康檢查：http://localhost:18001/health
+- 若你在 `.env` 修改 `APP_HOST_PORT`，請把上面兩個 URL 內的 `18001` 換成該值
+
+若無法連線，請依序檢查：
+
+```bash
+# 1) 確認 app 容器有在跑
+docker compose ps app
+
+# 2) 查看 app 啟動錯誤（常見是 DB/Redis 尚未就緒）
+docker compose logs app --tail=100
+
+# 3) 確認主機埠沒有被佔用，或改用其他埠
+# .env
+APP_HOST_PORT=18002
+docker compose down
+docker compose up -d
+```
 
 ### 本地開發
 
@@ -107,7 +130,7 @@ cp .env.example .env
 3. **啟動資料庫服務**
 
 ```bash
-docker-compose up -d postgres redis
+docker compose up -d postgres redis
 ```
 
 4. **執行資料庫遷移**
