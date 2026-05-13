@@ -8,7 +8,20 @@ class Base(DeclarativeBase):
     pass
 
 
-engine = create_async_engine(settings.database_url, echo=settings.debug)
+def _async_database_url(url: str) -> str:
+    """Ensure the database URL uses an async driver.
+
+    Converts bare ``postgresql://`` and ``postgres://`` URLs to
+    ``postgresql+asyncpg://`` so that SQLAlchemy's async engine works even
+    when the environment variable is set without the explicit driver suffix.
+    """
+    for prefix in ("postgresql://", "postgres://"):
+        if url.startswith(prefix):
+            return "postgresql+asyncpg://" + url[len(prefix):]
+    return url
+
+
+engine = create_async_engine(_async_database_url(settings.database_url), echo=settings.debug)
 
 AsyncSessionLocal = sessionmaker(
     bind=engine,
