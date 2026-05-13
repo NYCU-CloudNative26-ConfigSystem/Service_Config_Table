@@ -81,7 +81,7 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-預設會直接將主機埠 `${APP_HOST_PORT}`（預設 `18001`）映射到容器 `18001`。
+預設會直接將主機埠 `18001`（可由 `.env` 的 `APP_HOST_PORT` 覆蓋）映射到容器 `18001`。
 可用以下命令確認：
 
 ```bash
@@ -93,7 +93,7 @@ docker compose ps
 
 - API 文檔：http://localhost:18001/docs
 - 健康檢查：http://localhost:18001/health
-- 若你在 `.env` 修改 `APP_HOST_PORT`，請把 URL 中的 `18001` 換成該值
+- 若你在 `.env` 修改 `APP_HOST_PORT`，請把上面兩個 URL 內的 `18001` 換成該值
 
 若無法連線，請依序檢查：
 
