@@ -6,7 +6,7 @@ services:
     ports:
       - "${APP_HOST_PORT:-18001}:18001"
     environment:
-      - DATABASE_URL=postgresql://user:password@postgres:5432/config_table_db
+      - DATABASE_URL=postgresql+asyncpg://user:password@postgres:5432/config_table_db
       - REDIS_URL=redis://redis:6379/0
       - SECRET_KEY=${SECRET_KEY:-change-this-secret-key-in-production}
       - ALGORITHM=${ALGORITHM:-HS256}
