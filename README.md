@@ -186,7 +186,7 @@ GET /api/v1/configs/{entry_id}
 Authorization: Bearer {access_token}
 ```
 
-#### 更新 Entry（僅建立者）
+#### 更新 Entry（append-only，僅建立者）
 
 ```
 PUT /api/v1/configs/{entry_id}
@@ -196,16 +196,19 @@ Content-Type: application/json
 {
   "to_id": "val-002"
 }
+
+Response (201):
+{
+  "id":          "a-new-uuid-...",
+  "from_id":     "key-001",
+  "to_id":       "val-002",
+  "creator":     "alice",
+  "company":     "acme-corp",
+  "create_time": "2026-05-13T10:05:00Z"
+}
 ```
 
-#### 刪除 Entry（僅建立者）
-
-```
-DELETE /api/v1/configs/{entry_id}
-Authorization: Bearer {access_token}
-
-Response: 204 No Content
-```
+> **說明**：此服務採用不可變資料模式；更新不會覆寫舊資料，而是新增一筆新 row（新 `id`）。
 
 ## 資料庫遷移
 
@@ -218,7 +221,7 @@ make migrate-new message="add column" # 自動生成新遷移
 ## 安全特性
 
 - **JWT 驗證**：與 Service_Login 共用 `SECRET_KEY`，tokens 互通
-- **所有者保護**：只有建立者可以更新或刪除自己的 entry
+- **所有者保護**：只有建立者可以用「更新（新增新版本）」語義建立自己的後續 entry
 - **Config Service 驗證**：建立/更新時驗證 Key ID 和 Value ID 是否存在（Config Service 不可達時 fail-open，防止單點故障）
 - **輸入驗證**：Pydantic 嚴格校驗所有請求欄位
 
