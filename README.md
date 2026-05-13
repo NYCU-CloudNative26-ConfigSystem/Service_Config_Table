@@ -81,7 +81,7 @@ cp .env.example .env
 docker-compose up -d --build
 ```
 
-預設會將主機埠 `${APP_HOST_PORT}`（預設 `18001`）映射到容器 `18001`，不是 Docker redirect 問題。
+預設會直接將主機埠 `${APP_HOST_PORT}`（預設 `18001`）映射到容器 `18001`。
 可用以下命令確認：
 
 ```bash
@@ -106,6 +106,7 @@ docker-compose logs app --tail=100
 # 3) 確認主機埠沒有被佔用，或改用其他埠
 # .env
 APP_HOST_PORT=18002
+docker-compose down
 docker-compose up -d
 ```
 
