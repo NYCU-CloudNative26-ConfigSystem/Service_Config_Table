@@ -19,6 +19,7 @@ class Settings(BaseSettings):
 
     # App
     app_name: str = "Config Table Service"
+    app_host_port: int = 18001
     debug: bool = False
     log_level: str = "INFO"
 
