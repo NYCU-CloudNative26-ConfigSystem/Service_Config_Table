@@ -7,7 +7,7 @@ Mirrors the service layer pattern from Service_Login.
 import logging
 from datetime import datetime, timezone
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import (
@@ -84,43 +84,43 @@ class ConfigTableService:
         return list(result.scalars().all())
 
     # ------------------------------------------------------------------
-    # Update
+    # Append via update semantics
     # ------------------------------------------------------------------
 
-    async def update_entry(
+    async def append_entry_from_update(
         self,
         entry_id: str,
         payload: ConfigTableUpdate,
         requester: str,
     ) -> ConfigTable:
-        entry = await self.get_entry(entry_id)
-        if entry.creator != requester:
+        base_entry = await self.get_entry(entry_id)
+        if base_entry.creator != requester:
             raise ConfigEntryForbiddenError()
 
-        if payload.from_id is not None and not await validate_key_id(payload.from_id):
-            raise InvalidKeyIDError(payload.from_id)
-        if payload.to_id is not None and not await validate_value_id(payload.to_id):
-            raise InvalidValueIDError(payload.to_id)
+        from_id = payload.from_id if payload.from_id is not None else base_entry.from_id
+        to_id = payload.to_id if payload.to_id is not None else base_entry.to_id
+        company = payload.company if payload.company is not None else base_entry.company
 
-        for field, value in payload.model_dump(exclude_unset=True).items():
-            setattr(entry, field, value)
+        if not await validate_key_id(from_id):
+            raise InvalidKeyIDError(from_id)
+        if not await validate_value_id(to_id):
+            raise InvalidValueIDError(to_id)
 
-        await self.db.commit()
-        await self.db.refresh(entry)
-        logger.info("Config entry updated: id=%s by creator=%s", entry_id, requester)
-        return entry
-
-    # ------------------------------------------------------------------
-    # Delete
-    # ------------------------------------------------------------------
-
-    async def delete_entry(self, entry_id: str, requester: str) -> None:
-        entry = await self.get_entry(entry_id)
-        if entry.creator != requester:
-            raise ConfigEntryForbiddenError()
-
-        await self.db.execute(
-            delete(ConfigTable).where(ConfigTable.id == entry_id)
+        new_entry = ConfigTable(
+            from_id=from_id,
+            to_id=to_id,
+            creator=requester,
+            company=company,
+            create_time=datetime.now(timezone.utc),
         )
+        self.db.add(new_entry)
+
         await self.db.commit()
-        logger.info("Config entry deleted: id=%s by creator=%s", entry_id, requester)
+        await self.db.refresh(new_entry)
+        logger.info(
+            "Config entry appended from update: base_id=%s new_id=%s by creator=%s",
+            entry_id,
+            new_entry.id,
+            requester,
+        )
+        return new_entry

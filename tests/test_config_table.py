@@ -127,24 +127,34 @@ async def test_list_entries_filter_by_creator(client: AsyncClient, auth_headers:
         assert entry["creator"] == "testuser"
 
 
-async def test_update_entry(client: AsyncClient, auth_headers: dict):
+async def test_update_entry_creates_new_entry(client: AsyncClient, auth_headers: dict):
     create_resp = await client.post(
         "/api/v1/configs/",
         json={"from_id": "key-upd", "to_id": "val-upd", "company": "testcorp"},
         headers=auth_headers,
     )
-    entry_id = create_resp.json()["id"]
+    original_entry = create_resp.json()
+    entry_id = original_entry["id"]
 
     response = await client.put(
         f"/api/v1/configs/{entry_id}",
         json={"to_id": "val-upd-new"},
         headers=auth_headers,
     )
-    assert response.status_code == 200
-    assert response.json()["to_id"] == "val-upd-new"
+    assert response.status_code == 201
+    updated_entry = response.json()
+    assert updated_entry["id"] != entry_id
+    assert updated_entry["from_id"] == "key-upd"
+    assert updated_entry["to_id"] == "val-upd-new"
+    assert updated_entry["creator"] == "testuser"
+    assert updated_entry["company"] == "testcorp"
+
+    original_get = await client.get(f"/api/v1/configs/{entry_id}", headers=auth_headers)
+    assert original_get.status_code == 200
+    assert original_get.json()["to_id"] == "val-upd"
 
 
-async def test_delete_entry(client: AsyncClient, auth_headers: dict):
+async def test_delete_entry_not_supported(client: AsyncClient, auth_headers: dict):
     create_resp = await client.post(
         "/api/v1/configs/",
         json={"from_id": "key-del", "to_id": "val-del", "company": "testcorp"},
@@ -155,12 +165,7 @@ async def test_delete_entry(client: AsyncClient, auth_headers: dict):
     del_resp = await client.delete(
         f"/api/v1/configs/{entry_id}", headers=auth_headers
     )
-    assert del_resp.status_code == 204
-
-    get_resp = await client.get(
-        f"/api/v1/configs/{entry_id}", headers=auth_headers
-    )
-    assert get_resp.status_code == 404
+    assert del_resp.status_code == 405
 
 
 # ---------------------------------------------------------------------------
@@ -182,22 +187,6 @@ async def test_update_entry_forbidden_for_non_creator(
         f"/api/v1/configs/{entry_id}",
         json={"to_id": "val-hacked"},
         headers=other_headers,
-    )
-    assert response.status_code == 403
-
-
-async def test_delete_entry_forbidden_for_non_creator(
-    client: AsyncClient, auth_headers: dict, other_headers: dict
-):
-    create_resp = await client.post(
-        "/api/v1/configs/",
-        json={"from_id": "key-own2", "to_id": "val-own2", "company": "testcorp"},
-        headers=auth_headers,
-    )
-    entry_id = create_resp.json()["id"]
-
-    response = await client.delete(
-        f"/api/v1/configs/{entry_id}", headers=other_headers
     )
     assert response.status_code == 403
 

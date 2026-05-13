@@ -78,7 +78,8 @@ async def get_config_entry(
 @router.put(
     "/{entry_id}",
     response_model=ConfigTableResponse,
-    summary="Update a config table entry",
+    status_code=status.HTTP_201_CREATED,
+    summary="Append a new config table entry from an existing one",
 )
 async def update_config_entry(
     entry_id: str,
@@ -87,24 +88,9 @@ async def update_config_entry(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """
-    Partially update an entry.  Only the original **creator** may update
-    their own entry.
+    Treat update as append-only behavior: a new row is created and returned,
+    while the original row remains unchanged.
     """
-    return await svc.update_entry(entry_id, payload, requester=current_user.username)
-
-
-@router.delete(
-    "/{entry_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
-    summary="Delete a config table entry",
-)
-async def delete_config_entry(
-    entry_id: str,
-    svc: ConfigTableService = Depends(_svc),
-    current_user: CurrentUser = Depends(get_current_user),
-):
-    """
-    Delete an entry.  Only the original **creator** may delete their own
-    entry.
-    """
-    await svc.delete_entry(entry_id, requester=current_user.username)
+    return await svc.append_entry_from_update(
+        entry_id, payload, requester=current_user.username
+    )
