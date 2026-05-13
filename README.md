@@ -78,15 +78,36 @@ cp .env.example .env
 2. **啟動服務**
 
 ```bash
-docker-compose up -d
+docker-compose up -d --build
 ```
 
-預設綁定到主機 `18001` 埠（避免衝突）。
+預設會將主機埠 `${APP_HOST_PORT}`（預設 `18001`）映射到容器 `18001`，不是 Docker redirect 問題。
+可用以下命令確認：
+
+```bash
+docker-compose ps
+# 預期看到類似：0.0.0.0:18001->18001/tcp
+```
 
 3. **訪問應用**
 
-- API 文檔：http://localhost:18001/docs
-- 健康檢查：http://localhost:18001/health
+- API 文檔：http://localhost:${APP_HOST_PORT:-18001}/docs
+- 健康檢查：http://localhost:${APP_HOST_PORT:-18001}/health
+
+若無法連線，請依序檢查：
+
+```bash
+# 1) 確認 app 容器有在跑
+docker-compose ps app
+
+# 2) 查看 app 啟動錯誤（常見是 DB/Redis 尚未就緒）
+docker-compose logs app --tail=100
+
+# 3) 確認主機埠沒有被佔用，或改用其他埠
+# .env
+APP_HOST_PORT=18002
+docker-compose up -d
+```
 
 ### 本地開發
 
