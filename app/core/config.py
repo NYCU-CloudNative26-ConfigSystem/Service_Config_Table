@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     # Config Service (Key/Value ID validation)
     config_service_url: str = "http://config-service:8000"
 
+    # Version Control Service (append-only key history)
+    version_control_service_url: str = "http://version-control-service:18003"
+
     # App
     app_name: str = "Config Table Service"
     app_host_port: int = 18001

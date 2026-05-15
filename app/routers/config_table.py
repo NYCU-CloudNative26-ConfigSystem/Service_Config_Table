@@ -4,7 +4,7 @@ Config Table router  —  /api/v1/configs
 
 import logging
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.connection import get_db
@@ -15,6 +15,7 @@ from app.schemas.config_table import (
     ConfigTableUpdate,
 )
 from app.services.config_table_service import ConfigTableService
+from app.utils.version_control_client import sync_config_entry
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,7 @@ def _svc(db: AsyncSession = Depends(get_db)) -> ConfigTableService:
 )
 async def create_config_entry(
     payload: ConfigTableCreate,
+    request: Request,
     svc: ConfigTableService = Depends(_svc),
     current_user: CurrentUser = Depends(get_current_user),
 ):
@@ -41,7 +43,15 @@ async def create_config_entry(
     as stored in the Config Service.  The caller's username is recorded as
     the creator; ``company`` must be supplied in the request body.
     """
-    return await svc.create_entry(payload, creator=current_user.username)
+    entry = await svc.create_entry(payload, creator=current_user.username)
+    await sync_config_entry(
+        entry_id=entry.id,
+        key_id=entry.from_id,
+        value_id=entry.to_id,
+        created_at=entry.create_time,
+        authorization_header=request.headers.get("Authorization"),
+    )
+    return entry
 
 
 @router.get(
@@ -84,6 +94,7 @@ async def get_config_entry(
 async def update_config_entry(
     entry_id: str,
     payload: ConfigTableUpdate,
+    request: Request,
     svc: ConfigTableService = Depends(_svc),
     current_user: CurrentUser = Depends(get_current_user),
 ):
@@ -91,6 +102,14 @@ async def update_config_entry(
     Treat update as append-only behavior: a new row is created and returned,
     while the original row remains unchanged.
     """
-    return await svc.append_entry_from_update(
+    entry = await svc.append_entry_from_update(
         entry_id, payload, requester=current_user.username
     )
+    await sync_config_entry(
+        entry_id=entry.id,
+        key_id=entry.from_id,
+        value_id=entry.to_id,
+        created_at=entry.create_time,
+        authorization_header=request.headers.get("Authorization"),
+    )
+    return entry

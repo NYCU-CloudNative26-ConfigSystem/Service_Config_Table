@@ -247,6 +247,7 @@ make migrate-new message="add column" # 自動生成新遷移
 - **所有者保護**：只有建立者可以用「更新（新增新版本）」語義建立自己的後續 entry
 - **Config Service 驗證**：建立/更新時驗證 Key ID 和 Value ID 是否存在（Config Service 不可達時 fail-open，防止單點故障）
 - **輸入驗證**：Pydantic 嚴格校驗所有請求欄位
+- **版本歷史同步**：每次新增或 append config entry 後，會呼叫 Version Control Service 紀錄 key/value 歷史（沿用原始 Bearer JWT）
 
 ## 測試
 
