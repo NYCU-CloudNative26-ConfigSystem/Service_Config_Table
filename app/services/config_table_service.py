@@ -1,24 +1,11 @@
-"""
-Config Table Service — business logic layer.
-
-Mirrors the service layer pattern from Service_Login.
-"""
-
 import logging
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import (
-    ConfigEntryForbiddenError,
-    ConfigEntryNotFoundError,
-    InvalidKeyIDError,
-    InvalidValueIDError,
-)
-from app.models.config_table import ConfigTable
-from app.schemas.config_table import ConfigTableCreate, ConfigTableUpdate
-from app.utils.config_service_client import validate_key_id, validate_value_id
+from app.models.config_table import CT, GT, ConfigRelation, ConfigRelationUser
+from app.schemas.config_table import ConfigEntrySchema, ConfigReadResponse, ConfigWriteRequest, CTRowResponse, GroupEntrySchema
 
 logger = logging.getLogger(__name__)
 
@@ -27,100 +14,73 @@ class ConfigTableService:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
 
-    # ------------------------------------------------------------------
-    # Create
-    # ------------------------------------------------------------------
+    async def write_config(self, payload: ConfigWriteRequest) -> ConfigReadResponse:
+        now = datetime.now(timezone.utc)
 
-    async def create_entry(
-        self,
-        payload: ConfigTableCreate,
-        creator: str,
-    ) -> ConfigTable:
-        if not await validate_key_id(payload.from_id):
-            raise InvalidKeyIDError(payload.from_id)
-        if not await validate_value_id(payload.to_id):
-            raise InvalidValueIDError(payload.to_id)
-
-        entry = ConfigTable(
-            from_id=payload.from_id,
-            to_id=payload.to_id,
-            creator=creator,
-            company=payload.company,
-            create_time=datetime.now(timezone.utc),
+        # Soft-delete previous latest version
+        await self.db.execute(
+            update(ConfigRelation)
+            .where(
+                ConfigRelation.proj_id == payload.proj_id,
+                ConfigRelation.cmp_id == payload.cmp_id,
+                ConfigRelation.latest == True,  # noqa: E712
+            )
+            .values(latest=False, date_deleted=now)
         )
-        self.db.add(entry)
+
+        # New config_relation
+        cr = ConfigRelation(proj_id=payload.proj_id, cmp_id=payload.cmp_id)
+        self.db.add(cr)
+        await self.db.flush()  # get cr.uuid
+
+        # Junction row
+        self.db.add(ConfigRelationUser(config_relation_uuid=cr.uuid, user_id=payload.user_id))
+
+        # CT rows + recursive GT rows
+        ct_rows: list[CT] = []
+        for entry in payload.entries:
+            ct = CT(config_relation_uuid=cr.uuid, key=entry.key, val=entry.val)
+            self.db.add(ct)
+            ct_rows.append(ct)
+            if entry.group_entries:
+                self._insert_gt_rows(entry.group_entries)
+
         await self.db.commit()
-        await self.db.refresh(entry)
-        logger.info("Config entry created: id=%s by creator=%s", entry.id, creator)
-        return entry
+        await self.db.refresh(cr)
 
-    # ------------------------------------------------------------------
-    # Read
-    # ------------------------------------------------------------------
+        logger.info("Config written: config_relation=%s proj=%s cmp=%s", cr.uuid, payload.proj_id, payload.cmp_id)
 
-    async def get_entry(self, entry_id: str) -> ConfigTable:
+        return ConfigReadResponse(
+            config_relation_uuid=cr.uuid,
+            date_created=cr.date_created,
+            rows=[CTRowResponse(uuid=ct.uuid, key=ct.key, val=ct.val) for ct in ct_rows],
+        )
+
+    def _insert_gt_rows(self, entries: list[GroupEntrySchema]) -> None:
+        for entry in entries:
+            self.db.add(GT(gid=entry.gid, key=entry.key, val=entry.val))
+            if entry.group_entries:
+                self._insert_gt_rows(entry.group_entries)
+
+    async def get_config(self, proj_id: str, cmp_id: str) -> ConfigReadResponse | None:
         result = await self.db.execute(
-            select(ConfigTable).where(ConfigTable.id == entry_id)
+            select(ConfigRelation).where(
+                ConfigRelation.proj_id == proj_id,
+                ConfigRelation.cmp_id == cmp_id,
+                ConfigRelation.latest == True,  # noqa: E712
+            )
         )
-        entry = result.scalar_one_or_none()
-        if entry is None:
-            raise ConfigEntryNotFoundError(entry_id)
-        return entry
+        cr = result.scalar_one_or_none()
+        if cr is None:
+            return None
 
-    async def list_entries(
-        self,
-        skip: int = 0,
-        limit: int = 100,
-        creator: str | None = None,
-        company: str | None = None,
-    ) -> list[ConfigTable]:
-        stmt = select(ConfigTable)
-        if creator is not None:
-            stmt = stmt.where(ConfigTable.creator == creator)
-        if company is not None:
-            stmt = stmt.where(ConfigTable.company == company)
-        stmt = stmt.offset(skip).limit(limit)
-        result = await self.db.execute(stmt)
-        return list(result.scalars().all())
-
-    # ------------------------------------------------------------------
-    # Append via update semantics
-    # ------------------------------------------------------------------
-
-    async def append_entry_from_update(
-        self,
-        entry_id: str,
-        payload: ConfigTableUpdate,
-        requester: str,
-    ) -> ConfigTable:
-        base_entry = await self.get_entry(entry_id)
-        if base_entry.creator != requester:
-            raise ConfigEntryForbiddenError()
-
-        from_id = payload.from_id if payload.from_id is not None else base_entry.from_id
-        to_id = payload.to_id if payload.to_id is not None else base_entry.to_id
-        company = payload.company if payload.company is not None else base_entry.company
-
-        if not await validate_key_id(from_id):
-            raise InvalidKeyIDError(from_id)
-        if not await validate_value_id(to_id):
-            raise InvalidValueIDError(to_id)
-
-        new_entry = ConfigTable(
-            from_id=from_id,
-            to_id=to_id,
-            creator=requester,
-            company=company,
-            create_time=datetime.now(timezone.utc),
+        ct_result = await self.db.execute(
+            select(CT).where(CT.config_relation_uuid == cr.uuid)
         )
-        self.db.add(new_entry)
+        ct_rows = list(ct_result.scalars().all())
 
-        await self.db.commit()
-        await self.db.refresh(new_entry)
-        logger.info(
-            "Config entry appended from update: base_id=%s new_id=%s by creator=%s",
-            entry_id,
-            new_entry.id,
-            requester,
+        return ConfigReadResponse(
+            config_relation_uuid=cr.uuid,
+            date_created=cr.date_created,
+            rows=[CTRowResponse(uuid=ct.uuid, key=ct.key, val=ct.val) for ct in ct_rows],
         )
-        return new_entry

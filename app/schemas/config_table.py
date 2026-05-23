@@ -1,47 +1,43 @@
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
-class ConfigTableCreate(BaseModel):
-    """Payload for creating a new config table entry."""
+# ── Incoming (from frontend, after SSOT write) ────────────────────────────────
 
-    from_id: str = Field(
-        ...,
-        min_length=1,
-        max_length=255,
-        description="Key ID from Config Service",
-    )
-    to_id: str = Field(
-        ...,
-        min_length=1,
-        max_length=255,
-        description="Value ID from Config Service",
-    )
-    company: str = Field(
-        ...,
-        min_length=1,
-        max_length=255,
-        description="Company the creator belongs to",
-    )
+class GroupEntrySchema(BaseModel):
+    gid: str
+    key: str
+    val: str
+    group_entries: list["GroupEntrySchema"] | None = None
+
+GroupEntrySchema.model_rebuild()
 
 
-class ConfigTableUpdate(BaseModel):
-    """Payload for partially updating an existing config table entry."""
-
-    from_id: str | None = Field(None, min_length=1, max_length=255)
-    to_id: str | None = Field(None, min_length=1, max_length=255)
-    company: str | None = Field(None, min_length=1, max_length=255)
+class ConfigEntrySchema(BaseModel):
+    key: str   # NameNode UUID
+    val: str   # "VALUE:<uuid>" or "GROUP:<uuid>"
+    group_entries: list[GroupEntrySchema] | None = None
 
 
-class ConfigTableResponse(BaseModel):
-    """Response schema for a config table entry."""
+class ConfigWriteRequest(BaseModel):
+    proj_id: str
+    cmp_id: str
+    user_id: str
+    entries: list[ConfigEntrySchema]
 
-    id: str
-    from_id: str
-    to_id: str
-    creator: str
-    company: str
-    create_time: datetime
+
+# ── Outgoing ──────────────────────────────────────────────────────────────────
+
+class CTRowResponse(BaseModel):
+    uuid: str
+    key: str
+    val: str
 
     model_config = {"from_attributes": True}
+
+
+class ConfigReadResponse(BaseModel):
+    config_relation_uuid: str
+    date_created: datetime
+    rows: list[CTRowResponse]

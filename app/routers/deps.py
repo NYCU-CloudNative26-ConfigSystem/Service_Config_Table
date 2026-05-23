@@ -28,7 +28,7 @@ class CurrentUser:
 
 async def get_current_user(token: str = Depends(oauth2_scheme)) -> CurrentUser:
     payload = decode_access_token(token)
-    username: str | None = payload.get("sub")
+    username: str | None = payload.get("username") or payload.get("sub")
     if not username:
         raise InvalidTokenError()
     company: str = payload.get("company", "")
