@@ -690,3 +690,42 @@ async def test_approve_already_approved(client: AsyncClient, auth_headers: dict,
 
     res = await client.post(f"/api/v1/config/{uuid}/approve", headers=reviewer_headers)
     assert res.status_code == 400
+
+
+# ── Change description ────────────────────────────────────────────────────────
+
+async def test_write_config_stores_change_description(client: AsyncClient, auth_headers: dict):
+    proj, cmp = "CD-Proj-1", "CD-Cmp-1"
+    payload = {**write_payload(proj, cmp, [flat_entry("k", "VALUE:v")]),
+               "change_description": "initial bootstrap"}
+    res = await client.post(WRITE_URL, json=payload, headers=auth_headers)
+    assert res.status_code == 201
+    uuid = res.json()["config_relation_uuid"]
+
+    hist = await client.get(HIST_URL,
+        params={"proj_id": proj, "cmp_id": cmp, "environment": "production"},
+        headers=auth_headers)
+    items = hist.json()
+    assert items[0]["change_description"] == "initial bootstrap"
+
+    detail = await client.get(f"/api/v1/config/{uuid}", headers=auth_headers)
+    assert detail.status_code == 200
+    assert detail.json()["change_description"] == "initial bootstrap"
+
+
+async def test_write_config_without_change_description(client: AsyncClient, auth_headers: dict):
+    """Omitting change_description is fine — defaults to null."""
+    proj, cmp = "CD-Proj-2", "CD-Cmp-2"
+    res = await client.post(WRITE_URL,
+        json=write_payload(proj, cmp, [flat_entry("k", "VALUE:v")]),
+        headers=auth_headers)
+    assert res.status_code == 201
+    uuid = res.json()["config_relation_uuid"]
+
+    hist = await client.get(HIST_URL,
+        params={"proj_id": proj, "cmp_id": cmp, "environment": "production"},
+        headers=auth_headers)
+    assert hist.json()[0]["change_description"] is None
+
+    detail = await client.get(f"/api/v1/config/{uuid}", headers=auth_headers)
+    assert detail.json()["change_description"] is None
