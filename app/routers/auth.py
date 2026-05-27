@@ -49,10 +49,13 @@ async def login_for_access_token(
         )
     # TODO: delegate to Service_Login for credential verification once the
     #       service is reachable (replace the unconditional grant below).
+    role = form_data.scopes[0] if form_data.scopes else "user"
     access_token = create_access_token(
         data={
             "sub": form_data.username,
+            "username": form_data.username,
             "company": form_data.client_id or "",
+            "role": role,
         },
         expires_delta=timedelta(minutes=settings.access_token_expire_minutes),
     )

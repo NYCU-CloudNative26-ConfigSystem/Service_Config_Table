@@ -11,4 +11,6 @@ COPY . .
 
 EXPOSE 18001
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "18001"]
+COPY entrypoint.sh .
+RUN chmod +x entrypoint.sh
+CMD ["./entrypoint.sh"]
