@@ -21,9 +21,10 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token")
 class CurrentUser:
     """Lightweight representation of the authenticated caller."""
 
-    def __init__(self, username: str, company: str) -> None:
+    def __init__(self, username: str, company: str, role: str = "user") -> None:
         self.username = username
         self.company = company
+        self.role = role
 
 
 async def get_current_user(token: str = Depends(oauth2_scheme)) -> CurrentUser:
@@ -32,4 +33,5 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> CurrentUser:
     if not username:
         raise InvalidTokenError()
     company: str = payload.get("company", "")
-    return CurrentUser(username=username, company=company)
+    role: str = payload.get("role", "user")
+    return CurrentUser(username=username, company=company, role=role)

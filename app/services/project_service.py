@@ -1,11 +1,11 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models.project import Project, ProjectCompany
-from app.schemas.project import ProjectResponse
+from app.models.project import Project, ProjectCompany, ProjectTemplateKey, ProjectTemplateVersion, ProjectTemplateVersionKey
+from app.schemas.project import ProjectResponse, ProjectTemplateKeyResponse, ProjectTemplateVersionResponse, PublishedTemplateKeysResponse
 
 
 def _to_response(project: Project) -> ProjectResponse:
@@ -109,4 +109,137 @@ async def remove_company(db: AsyncSession, proj_id: str, cmp_id: str) -> None:
     if pc is None:
         raise LookupError(f"Company '{cmp_id}' not found in project '{proj_id}'")
     await db.delete(pc)
+    await db.commit()
+
+
+async def get_template_keys(db: AsyncSession, proj_id: str) -> list[ProjectTemplateKeyResponse]:
+    result = await db.execute(
+        select(ProjectTemplateKey)
+        .where(ProjectTemplateKey.proj_id == proj_id)
+        .order_by(ProjectTemplateKey.position, ProjectTemplateKey.date_created)
+    )
+    return [ProjectTemplateKeyResponse.model_validate(k) for k in result.scalars().all()]
+
+
+async def add_template_key(
+    db: AsyncSession, proj_id: str, alias: str, position: int
+) -> ProjectTemplateKeyResponse:
+    existing = await db.execute(
+        select(ProjectTemplateKey).where(
+            ProjectTemplateKey.proj_id == proj_id,
+            ProjectTemplateKey.alias == alias,
+        )
+    )
+    if existing.scalar_one_or_none() is not None:
+        raise ValueError(f"'{alias}' is already a required template key for this project")
+
+    # auto-position after existing keys
+    if position == 0:
+        count = await db.scalar(
+            select(func.count(ProjectTemplateKey.uuid)).where(ProjectTemplateKey.proj_id == proj_id)
+        )
+        position = (count or 0)
+
+    key = ProjectTemplateKey(proj_id=proj_id, alias=alias, position=position)
+    db.add(key)
+    await db.commit()
+    await db.refresh(key)
+    return ProjectTemplateKeyResponse.model_validate(key)
+
+
+async def get_template_versions(db: AsyncSession, proj_id: str) -> list[ProjectTemplateVersionResponse]:
+    result = await db.execute(
+        select(ProjectTemplateVersion)
+        .where(ProjectTemplateVersion.proj_id == proj_id)
+        .options(selectinload(ProjectTemplateVersion.keys))
+        .order_by(ProjectTemplateVersion.version_number.desc())
+    )
+    versions = result.scalars().all()
+    return [
+        ProjectTemplateVersionResponse(
+            uuid=v.uuid,
+            proj_id=v.proj_id,
+            version_number=v.version_number,
+            latest=v.latest,
+            created_by=v.created_by,
+            date_created=v.date_created,
+            keys=[k.alias for k in v.keys],
+        )
+        for v in versions
+    ]
+
+
+async def get_published_template_keys(db: AsyncSession, proj_id: str) -> PublishedTemplateKeysResponse:
+    result = await db.execute(
+        select(ProjectTemplateVersion)
+        .where(ProjectTemplateVersion.proj_id == proj_id, ProjectTemplateVersion.latest == True)  # noqa: E712
+        .options(selectinload(ProjectTemplateVersion.keys))
+    )
+    version = result.scalar_one_or_none()
+    if version is None:
+        return PublishedTemplateKeysResponse(version_uuid=None, keys=[])
+    return PublishedTemplateKeysResponse(
+        version_uuid=version.uuid,
+        keys=[k.alias for k in version.keys],
+    )
+
+
+async def publish_template(db: AsyncSession, proj_id: str, created_by: str) -> ProjectTemplateVersionResponse:
+    draft_keys = await get_template_keys(db, proj_id)
+
+    # Mark current latest as not latest
+    await db.execute(
+        update(ProjectTemplateVersion)
+        .where(ProjectTemplateVersion.proj_id == proj_id, ProjectTemplateVersion.latest == True)  # noqa: E712
+        .values(latest=False)
+    )
+
+    # Compute next version number
+    max_result = await db.scalar(
+        select(func.max(ProjectTemplateVersion.version_number))
+        .where(ProjectTemplateVersion.proj_id == proj_id)
+    )
+    next_version = (max_result or 0) + 1
+
+    version = ProjectTemplateVersion(
+        proj_id=proj_id,
+        version_number=next_version,
+        latest=True,
+        created_by=created_by,
+    )
+    db.add(version)
+    await db.flush()
+
+    for key in draft_keys:
+        db.add(ProjectTemplateVersionKey(
+            template_version_uuid=version.uuid,
+            alias=key.alias,
+            position=key.position,
+        ))
+
+    await db.commit()
+    await db.refresh(version)
+
+    return ProjectTemplateVersionResponse(
+        uuid=version.uuid,
+        proj_id=version.proj_id,
+        version_number=version.version_number,
+        latest=version.latest,
+        created_by=version.created_by,
+        date_created=version.date_created,
+        keys=[k.alias for k in draft_keys],
+    )
+
+
+async def remove_template_key(db: AsyncSession, proj_id: str, key_uuid: str) -> None:
+    result = await db.execute(
+        select(ProjectTemplateKey).where(
+            ProjectTemplateKey.uuid == key_uuid,
+            ProjectTemplateKey.proj_id == proj_id,
+        )
+    )
+    key = result.scalar_one_or_none()
+    if key is None:
+        raise LookupError(f"Template key '{key_uuid}' not found in project '{proj_id}'")
+    await db.delete(key)
     await db.commit()

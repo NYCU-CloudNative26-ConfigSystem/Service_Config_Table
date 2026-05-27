@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.connection import Base
@@ -18,6 +18,14 @@ class ConfigRelation(Base):
     date_deleted: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     proj_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     cmp_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    environment: Mapped[str] = mapped_column(String(20), nullable=False, default="production", index=True)
+    template_version_uuid: Mapped[str | None] = mapped_column(String(36), nullable=True)
+
+    approval_status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending", index=True)
+    approved_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    change_description: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     users: Mapped[list["ConfigRelationUser"]] = relationship(back_populates="config_relation", cascade="all, delete-orphan")
     ct_rows: Mapped[list["CT"]] = relationship(back_populates="config_relation", cascade="all, delete-orphan")

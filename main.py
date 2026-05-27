@@ -8,7 +8,7 @@ from app.core.config import settings
 from app.core.logging import configure_logging
 from app.database.connection import Base, engine
 from app.database.redis import close_redis
-from app.routers import auth, config_table, projects
+from app.routers import auth, companies, config_table, projects
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -51,6 +51,7 @@ app.add_middleware(
 # Routers
 api_prefix = "/api/v1"
 app.include_router(auth.router, prefix=api_prefix)
+app.include_router(companies.router, prefix=api_prefix)
 app.include_router(config_table.router, prefix=api_prefix)
 app.include_router(projects.router, prefix=api_prefix)
 

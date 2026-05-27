@@ -86,3 +86,24 @@ async def other_token(client: AsyncClient) -> str:
 @pytest_asyncio.fixture()
 async def other_headers(other_token: str) -> dict:
     return {"Authorization": f"Bearer {other_token}"}
+
+
+@pytest_asyncio.fixture()
+async def reviewer_token(client: AsyncClient) -> str:
+    """Token for a reviewer-role user (can approve/reject configs)."""
+    response = await client.post(
+        "/api/v1/auth/token",
+        data={
+            "username": "reviewer",
+            "password": "reviewerpass",
+            "client_id": "reviewcorp",
+            "scope": "reviewer",
+        },
+    )
+    assert response.status_code == 200, response.text
+    return response.json()["access_token"]
+
+
+@pytest_asyncio.fixture()
+async def reviewer_headers(reviewer_token: str) -> dict:
+    return {"Authorization": f"Bearer {reviewer_token}"}

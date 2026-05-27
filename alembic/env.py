@@ -18,6 +18,7 @@ if config.config_file_name is not None:
 # ---- Import models so Alembic can detect schema changes ----
 from app.core.config import settings  # noqa: E402
 from app.database.connection import Base  # noqa: E402
+import app.models.company  # noqa: E402, F401
 import app.models.config_table  # noqa: E402, F401  (registers the model)
 import app.models.project  # noqa: E402, F401
 
