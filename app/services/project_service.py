@@ -160,6 +160,7 @@ async def get_template_versions(db: AsyncSession, proj_id: str) -> list[ProjectT
             uuid=v.uuid,
             proj_id=v.proj_id,
             version_number=v.version_number,
+            template_name=v.template_name,
             latest=v.latest,
             created_by=v.created_by,
             date_created=v.date_created,
@@ -184,7 +185,12 @@ async def get_published_template_keys(db: AsyncSession, proj_id: str) -> Publish
     )
 
 
-async def publish_template(db: AsyncSession, proj_id: str, created_by: str) -> ProjectTemplateVersionResponse:
+async def publish_template(
+    db: AsyncSession,
+    proj_id: str,
+    created_by: str,
+    template_name: str | None = None,
+) -> ProjectTemplateVersionResponse:
     draft_keys = await get_template_keys(db, proj_id)
 
     # Mark current latest as not latest
@@ -204,6 +210,7 @@ async def publish_template(db: AsyncSession, proj_id: str, created_by: str) -> P
     version = ProjectTemplateVersion(
         proj_id=proj_id,
         version_number=next_version,
+        template_name=template_name,
         latest=True,
         created_by=created_by,
     )
@@ -224,10 +231,44 @@ async def publish_template(db: AsyncSession, proj_id: str, created_by: str) -> P
         uuid=version.uuid,
         proj_id=version.proj_id,
         version_number=version.version_number,
+        template_name=version.template_name,
         latest=version.latest,
         created_by=version.created_by,
         date_created=version.date_created,
         keys=[k.alias for k in draft_keys],
+    )
+
+
+async def apply_template_version(
+    db: AsyncSession,
+    proj_id: str,
+    version_uuid: str,
+) -> ProjectTemplateVersionResponse:
+    result = await db.execute(
+        select(ProjectTemplateVersion)
+        .where(ProjectTemplateVersion.proj_id == proj_id)
+        .options(selectinload(ProjectTemplateVersion.keys))
+    )
+    versions = result.scalars().all()
+    target = next((v for v in versions if v.uuid == version_uuid), None)
+    if target is None:
+        raise LookupError(f"Template version '{version_uuid}' not found in project '{proj_id}'")
+
+    for version in versions:
+        version.latest = version.uuid == version_uuid
+
+    await db.commit()
+    await db.refresh(target)
+
+    return ProjectTemplateVersionResponse(
+        uuid=target.uuid,
+        proj_id=target.proj_id,
+        version_number=target.version_number,
+        template_name=target.template_name,
+        latest=target.latest,
+        created_by=target.created_by,
+        date_created=target.date_created,
+        keys=[k.alias for k in target.keys],
     )
 
 

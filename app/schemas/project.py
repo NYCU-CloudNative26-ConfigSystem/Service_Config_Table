@@ -44,12 +44,17 @@ class ProjectTemplateVersionResponse(BaseModel):
     uuid: str
     proj_id: str
     version_number: int
+    template_name: str | None = None
     latest: bool
     created_by: str
     date_created: datetime
     keys: list[str]
 
     model_config = {"from_attributes": True}
+
+
+class PublishTemplateRequest(BaseModel):
+    template_name: str | None = None
 
 
 class PublishedTemplateKeysResponse(BaseModel):
