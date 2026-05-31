@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -9,6 +10,7 @@ from app.core.logging import configure_logging
 from app.database.connection import Base, engine
 from app.database.redis import close_redis
 from app.routers import auth, companies, config_table, projects
+from app.services.notification_service import start_subscriber
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -20,8 +22,10 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     logger.info("Database tables verified / created.")
+    subscriber_task = asyncio.create_task(start_subscriber())
     yield
     # ---- shutdown ----
+    subscriber_task.cancel()
     await engine.dispose()
     await close_redis()
     logger.info("Application shutdown complete.")

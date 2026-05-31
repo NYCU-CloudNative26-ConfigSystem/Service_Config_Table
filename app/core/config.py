@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     lockout_duration_seconds: int = 900
     session_expire_seconds: int = 86400
 
+    # Notifications
+    gmail_user: str = ""
+    gmail_app_password: str = ""
+    internal_api_key: str = ""
+    app_base_url: str = ""
+
     class Config:
         env_file = ".env"
 
