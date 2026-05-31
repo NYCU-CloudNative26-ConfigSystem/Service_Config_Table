@@ -72,6 +72,7 @@ class ProjectTemplateVersion(Base):
         String(255), ForeignKey("project.proj_id", ondelete="CASCADE"), nullable=False, index=True
     )
     version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    template_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     latest: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_by: Mapped[str] = mapped_column(String(255), nullable=False)
     date_created: Mapped[datetime] = mapped_column(

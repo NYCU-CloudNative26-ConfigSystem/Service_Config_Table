@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.connection import get_db
 from app.routers.deps import CurrentUser, get_current_user
-from app.schemas.project import AddCompanyRequest, AddTemplateKeyRequest, ProjectCreate, ProjectResponse, ProjectTemplateKeyResponse, ProjectTemplateVersionResponse, PublishedTemplateKeysResponse
+from app.schemas.project import AddCompanyRequest, AddTemplateKeyRequest, ProjectCreate, ProjectResponse, ProjectTemplateKeyResponse, ProjectTemplateVersionResponse, PublishTemplateRequest, PublishedTemplateKeysResponse
 from app.services import project_service
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -153,6 +153,7 @@ async def get_template_versions(
 @router.post("/{proj_id}/template/publish", status_code=201, response_model=ProjectTemplateVersionResponse)
 async def publish_template(
     proj_id: str,
+    payload: PublishTemplateRequest | None = None,
     current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -161,7 +162,26 @@ async def publish_template(
         raise HTTPException(status_code=404, detail=f"Project '{proj_id}' not found")
     if project.created_by != current_user.username:
         raise HTTPException(status_code=403, detail="Only the project creator can publish the template")
-    return await project_service.publish_template(db, proj_id, current_user.username)
+    template_name = payload.template_name if payload is not None else None
+    return await project_service.publish_template(db, proj_id, current_user.username, template_name)
+
+
+@router.post("/{proj_id}/template/versions/{version_uuid}/apply", response_model=ProjectTemplateVersionResponse)
+async def apply_template_version(
+    proj_id: str,
+    version_uuid: str,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    project = await project_service.get_project(db, proj_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail=f"Project '{proj_id}' not found")
+    if project.created_by != current_user.username:
+        raise HTTPException(status_code=403, detail="Only the project creator can apply template versions")
+    try:
+        return await project_service.apply_template_version(db, proj_id, version_uuid)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @router.get("/{proj_id}/template/published-keys", response_model=PublishedTemplateKeysResponse)
