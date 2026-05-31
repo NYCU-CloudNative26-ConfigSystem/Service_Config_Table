@@ -25,6 +25,7 @@ class ConfigTableService:
             latest=False,
             approval_status="pending",
             change_description=payload.change_description,
+            promoted_from_uuid=payload.source_snapshot_uuid,
         )
         self.db.add(cr)
         await self.db.flush()  # get cr.uuid
@@ -105,6 +106,7 @@ class ConfigTableService:
             approval_status="approved",
             approved_by=user_id,
             approved_at=now,
+            promoted_from_uuid=source.uuid,
         )
         self.db.add(new_cr)
         await self.db.flush()
@@ -177,6 +179,7 @@ class ConfigTableService:
             approval_status="approved",
             approved_by=user_id,
             approved_at=now,
+            promoted_from_uuid=source.uuid,
         )
         self.db.add(new_cr)
         await self.db.flush()
@@ -264,6 +267,7 @@ class ConfigTableService:
                 approved_at=cr.approved_at,
                 rejection_reason=cr.rejection_reason,
                 change_description=cr.change_description,
+                promoted_from_uuid=cr.promoted_from_uuid,
             ))
         return items
 
@@ -296,6 +300,9 @@ class ConfigTableService:
             created_by=created_by,
             is_latest=cr.latest,
             change_description=cr.change_description,
+            promoted_from_uuid=cr.promoted_from_uuid,
+            proj_id=cr.proj_id,
+            cmp_id=cr.cmp_id,
         )
 
     async def get_config(self, proj_id: str, cmp_id: str, environment: str = "production") -> ConfigReadResponse | None:

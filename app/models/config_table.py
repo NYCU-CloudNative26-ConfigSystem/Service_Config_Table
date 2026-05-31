@@ -26,6 +26,7 @@ class ConfigRelation(Base):
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     change_description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    promoted_from_uuid: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
     users: Mapped[list["ConfigRelationUser"]] = relationship(back_populates="config_relation", cascade="all, delete-orphan")
     ct_rows: Mapped[list["CT"]] = relationship(back_populates="config_relation", cascade="all, delete-orphan")
