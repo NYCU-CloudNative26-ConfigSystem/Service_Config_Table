@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     internal_api_key: str = ""
     app_base_url: str = ""
 
+    # Set to True only in local development to allow /auth/token without credentials
+    dev_auth_enabled: bool = False
+
     class Config:
         env_file = ".env"
 

@@ -42,13 +42,16 @@ async def login_for_access_token(
     integration tests can set it without a custom field (OAuth2 form data
     does not include a company field by default).
     """
+    if not settings.dev_auth_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Use Service Login to authenticate",
+        )
     if not form_data.username or not form_data.password:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="username and password are required",
         )
-    # TODO: delegate to Service_Login for credential verification once the
-    #       service is reachable (replace the unconditional grant below).
     role = form_data.scopes[0] if form_data.scopes else "user"
     access_token = create_access_token(
         data={

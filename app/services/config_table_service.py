@@ -144,6 +144,10 @@ class ConfigTableService:
         source = src_result.scalar_one_or_none()
         if source is None:
             raise LookupError(f"Config snapshot '{config_uuid}' not found")
+        if source.approval_status != "approved":
+            raise ValueError(
+                f"Cannot promote snapshot with status '{source.approval_status}'"
+            )
 
         # Fetch its CT rows
         ct_result = await self.db.execute(

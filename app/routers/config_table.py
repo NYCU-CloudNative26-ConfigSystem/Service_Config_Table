@@ -115,6 +115,8 @@ async def promote_config_by_uuid(
         return await svc.promote_config_by_uuid(config_uuid, payload.to_environment, current_user.username)
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.post(

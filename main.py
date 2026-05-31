@@ -43,10 +43,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS — tighten origins in production
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[settings.app_base_url] if settings.app_base_url else ["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

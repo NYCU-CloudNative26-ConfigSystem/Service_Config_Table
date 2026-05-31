@@ -8,7 +8,7 @@ from sqlalchemy import select, distinct
 
 from app.core.config import settings
 from app.database.connection import AsyncSessionLocal
-from app.models.config_table import CT, ConfigRelationUser
+from app.models.config_table import CT, ConfigRelation, ConfigRelationUser
 from app.services.email_service import send_update_notification
 
 logger = logging.getLogger(__name__)
@@ -42,9 +42,11 @@ async def _handle_truth_updated(data: dict) -> None:
         return
 
     async with AsyncSessionLocal() as db:
-        # Find config relations that have a CT row referencing this NameNode
+        # Only notify for currently-active (latest, approved) config relations
         cr_uuids_result = await db.execute(
-            select(distinct(CT.config_relation_uuid)).where(CT.key == name_id)
+            select(distinct(CT.config_relation_uuid))
+            .join(ConfigRelation, ConfigRelation.uuid == CT.config_relation_uuid)
+            .where(CT.key == name_id, ConfigRelation.latest == True)  # noqa: E712
         )
         cr_uuids = [r for (r,) in cr_uuids_result.all()]
 
@@ -83,8 +85,8 @@ async def start_subscriber() -> None:
     """Background task: subscribe to Redis truth:updated channel and dispatch notifications."""
     redis_url = settings.redis_url
     while True:
+        redis: Redis = Redis.from_url(redis_url, decode_responses=True)
         try:
-            redis: Redis = Redis.from_url(redis_url, decode_responses=True)
             pubsub = redis.pubsub()
             await pubsub.subscribe("truth:updated")
             logger.info("Subscribed to Redis channel 'truth:updated'")
@@ -101,3 +103,5 @@ async def start_subscriber() -> None:
         except Exception as exc:
             logger.error("Redis subscriber error, reconnecting in 5s: %s", exc)
             await asyncio.sleep(5)
+        finally:
+            await redis.aclose()
