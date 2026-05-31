@@ -466,7 +466,7 @@ async def test_promote_requires_auth(client: AsyncClient):
 
 # ── Promote by UUID ───────────────────────────────────────────────────────────
 
-async def test_promote_by_uuid_copies_snapshot(client: AsyncClient, auth_headers: dict):
+async def test_promote_by_uuid_copies_snapshot(client: AsyncClient, auth_headers: dict, reviewer_headers: dict):
     proj, cmp = "PBU-Proj-1", "PBU-Cmp-1"
 
     write_res = await client.post(WRITE_URL,
@@ -477,6 +477,7 @@ async def test_promote_by_uuid_copies_snapshot(client: AsyncClient, auth_headers
         headers=auth_headers)
     assert write_res.status_code == 201
     snapshot_uuid = write_res.json()["config_relation_uuid"]
+    await approve(client, snapshot_uuid, reviewer_headers)
 
     res = await client.post(f"/api/v1/config/{snapshot_uuid}/promote",
         json={"to_environment": "testing"},
@@ -489,7 +490,7 @@ async def test_promote_by_uuid_copies_snapshot(client: AsyncClient, auth_headers
     assert keys == {"uuid-key-1", "uuid-key-2"}
 
 
-async def test_promote_by_uuid_makes_new_latest_in_target(client: AsyncClient, auth_headers: dict):
+async def test_promote_by_uuid_makes_new_latest_in_target(client: AsyncClient, auth_headers: dict, reviewer_headers: dict):
     proj, cmp = "PBU-Proj-2", "PBU-Cmp-2"
 
     await client.post(WRITE_URL,
@@ -500,6 +501,7 @@ async def test_promote_by_uuid_makes_new_latest_in_target(client: AsyncClient, a
         json=write_payload(proj, cmp, [flat_entry("dev-key", "VALUE:dev")], env="development"),
         headers=auth_headers)
     snapshot_uuid = write_res.json()["config_relation_uuid"]
+    await approve(client, snapshot_uuid, reviewer_headers)
 
     await client.post(f"/api/v1/config/{snapshot_uuid}/promote",
         json={"to_environment": "testing"},
@@ -531,18 +533,21 @@ async def test_promote_by_uuid_requires_auth(client: AsyncClient, auth_headers: 
     assert res.status_code == 401
 
 
-async def test_promote_by_uuid_historical_snapshot(client: AsyncClient, auth_headers: dict):
-    """Promote a non-latest (historical) snapshot by UUID."""
+async def test_promote_by_uuid_historical_snapshot(client: AsyncClient, auth_headers: dict, reviewer_headers: dict):
+    """Promote a non-latest (historical but approved) snapshot by UUID."""
     proj, cmp = "PBU-Proj-4", "PBU-Cmp-4"
 
     first_res = await client.post(WRITE_URL,
         json=write_payload(proj, cmp, [flat_entry("historical-key", "VALUE:hist")], env="development"),
         headers=auth_headers)
     historical_uuid = first_res.json()["config_relation_uuid"]
+    await approve(client, historical_uuid, reviewer_headers)
 
-    await client.post(WRITE_URL,
+    # Write and approve a newer snapshot so historical is no longer latest
+    second_res = await client.post(WRITE_URL,
         json=write_payload(proj, cmp, [flat_entry("latest-key", "VALUE:latest")], env="development"),
         headers=auth_headers)
+    await approve(client, second_res.json()["config_relation_uuid"], reviewer_headers)
 
     res = await client.post(f"/api/v1/config/{historical_uuid}/promote",
         json={"to_environment": "staging"},
@@ -551,6 +556,38 @@ async def test_promote_by_uuid_historical_snapshot(client: AsyncClient, auth_hea
     body = res.json()
     assert body["environment"] == "staging"
     assert body["rows"][0]["key"] == "historical-key"
+
+
+async def test_promote_by_uuid_rejects_pending(client: AsyncClient, auth_headers: dict):
+    """Cannot promote a snapshot that has not been approved yet."""
+    write_res = await client.post(WRITE_URL,
+        json=write_payload("PBU-Rej-1", "PBU-Rej-C1", [flat_entry("k", "VALUE:v")], env="development"),
+        headers=auth_headers)
+    snapshot_uuid = write_res.json()["config_relation_uuid"]
+
+    res = await client.post(f"/api/v1/config/{snapshot_uuid}/promote",
+        json={"to_environment": "testing"},
+        headers=auth_headers)
+    assert res.status_code == 400
+    assert "pending" in res.json()["detail"]
+
+
+async def test_promote_by_uuid_rejects_rejected_snapshot(client: AsyncClient, auth_headers: dict, reviewer_headers: dict):
+    """Cannot promote a snapshot that has been rejected."""
+    write_res = await client.post(WRITE_URL,
+        json=write_payload("PBU-Rej-2", "PBU-Rej-C2", [flat_entry("k", "VALUE:v")], env="development"),
+        headers=auth_headers)
+    snapshot_uuid = write_res.json()["config_relation_uuid"]
+
+    await client.post(f"/api/v1/config/{snapshot_uuid}/reject",
+        json={"reason": "not ready"},
+        headers=reviewer_headers)
+
+    res = await client.post(f"/api/v1/config/{snapshot_uuid}/promote",
+        json={"to_environment": "testing"},
+        headers=auth_headers)
+    assert res.status_code == 400
+    assert "rejected" in res.json()["detail"]
 
 
 # ── Approval workflow ─────────────────────────────────────────────────────────
