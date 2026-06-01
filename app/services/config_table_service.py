@@ -2,7 +2,7 @@ import logging
 import re
 from datetime import datetime, timezone
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.company import Company
@@ -437,6 +437,46 @@ class ConfigTableService:
             approved_by=cr.approved_by,
             approved_at=cr.approved_at,
             rejection_reason=cr.rejection_reason,
+        )
+
+    async def update_pending_config(self, config_uuid: str, entries: list[ConfigEntrySchema], editor_id: str) -> ConfigReadResponse:
+        result = await self.db.execute(select(ConfigRelation).where(ConfigRelation.uuid == config_uuid))
+        cr = result.scalar_one_or_none()
+        if cr is None:
+            raise LookupError(f"Config snapshot '{config_uuid}' not found")
+        if cr.approval_status != "pending":
+            raise ValueError(f"Only pending snapshots can be edited (status: '{cr.approval_status}')")
+
+        user_result = await self.db.execute(
+            select(ConfigRelationUser.user_id)
+            .where(ConfigRelationUser.config_relation_uuid == config_uuid)
+            .limit(1)
+        )
+        submitter = user_result.scalar_one_or_none()
+        if submitter == editor_id:
+            raise PermissionError("Cannot edit a snapshot you submitted")
+
+        await self.db.execute(delete(CT).where(CT.config_relation_uuid == config_uuid))
+
+        ct_rows: list[CT] = []
+        for entry in entries:
+            ct = CT(config_relation_uuid=cr.uuid, key=entry.key, val=entry.val)
+            self.db.add(ct)
+            ct_rows.append(ct)
+            if entry.group_entries:
+                self._insert_gt_rows(entry.group_entries)
+
+        await self.db.commit()
+        await self.db.refresh(cr)
+
+        logger.info("Pending config updated by reviewer: %s by %s", config_uuid, editor_id)
+        return ConfigReadResponse(
+            config_relation_uuid=cr.uuid,
+            date_created=cr.date_created,
+            environment=cr.environment,
+            rows=[CTRowResponse(uuid=ct.uuid, key=ct.key, val=ct.val) for ct in ct_rows],
+            approval_status=cr.approval_status,
+            name=cr.name,
         )
 
     async def search_configs(
