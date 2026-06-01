@@ -766,3 +766,200 @@ async def test_write_config_without_change_description(client: AsyncClient, auth
 
     detail = await client.get(f"/api/v1/config/{uuid}", headers=auth_headers)
     assert detail.json()["change_description"] is None
+
+
+# ── Config name ───────────────────────────────────────────────────────────────
+
+SEARCH_URL = "/api/v1/config/search"
+
+
+async def test_write_config_stores_explicit_name(client: AsyncClient, auth_headers: dict):
+    proj, cmp = "NAME-Proj-1", "NAME-Cmp-1"
+    payload = {**write_payload(proj, cmp, [flat_entry("k", "VALUE:v")]), "name": "Q2 Production Baseline"}
+    res = await client.post(WRITE_URL, json=payload, headers=auth_headers)
+    assert res.status_code == 201
+    assert res.json()["name"] == "Q2 Production Baseline"
+
+
+async def test_write_config_name_in_history(client: AsyncClient, auth_headers: dict):
+    proj, cmp = "NAME-Proj-2", "NAME-Cmp-2"
+    payload = {**write_payload(proj, cmp, [flat_entry("k", "VALUE:v")]), "name": "my snapshot"}
+    await client.post(WRITE_URL, json=payload, headers=auth_headers)
+
+    hist = await client.get(HIST_URL,
+        params={"proj_id": proj, "cmp_id": cmp, "environment": "production"},
+        headers=auth_headers)
+    assert hist.json()[0]["name"] == "my snapshot"
+
+
+async def test_write_config_name_in_get_by_uuid(client: AsyncClient, auth_headers: dict):
+    proj, cmp = "NAME-Proj-3", "NAME-Cmp-3"
+    payload = {**write_payload(proj, cmp, [flat_entry("k", "VALUE:v")]), "name": "uuid detail name"}
+    res = await client.post(WRITE_URL, json=payload, headers=auth_headers)
+    uuid = res.json()["config_relation_uuid"]
+
+    detail = await client.get(f"/api/v1/config/{uuid}", headers=auth_headers)
+    assert detail.status_code == 200
+    assert detail.json()["name"] == "uuid detail name"
+
+
+async def test_write_config_name_strips_whitespace(client: AsyncClient, auth_headers: dict):
+    proj, cmp = "NAME-Proj-4", "NAME-Cmp-4"
+    payload = {**write_payload(proj, cmp, [flat_entry("k", "VALUE:v")]), "name": "  trimmed  "}
+    res = await client.post(WRITE_URL, json=payload, headers=auth_headers)
+    assert res.status_code == 201
+    assert res.json()["name"] == "trimmed"
+
+
+async def test_write_config_blank_name_generates_default(client: AsyncClient, auth_headers: dict):
+    """Whitespace-only name should fall back to auto-generation."""
+    proj, cmp = "NAME-Proj-5", "NAME-Cmp-5"
+    payload = {**write_payload(proj, cmp, [flat_entry("k", "VALUE:v")]), "name": "   "}
+    res = await client.post(WRITE_URL, json=payload, headers=auth_headers)
+    assert res.status_code == 201
+    name = res.json()["name"]
+    assert name is not None
+    assert len(name) > 0
+
+
+async def test_write_config_no_name_generates_default(client: AsyncClient, auth_headers: dict):
+    """Omitting name should auto-generate one that includes proj_id and cmp_id substrings."""
+    proj, cmp = "NAME-Proj-6", "NAME-Cmp-6"
+    res = await client.post(WRITE_URL,
+        json=write_payload(proj, cmp, [flat_entry("k", "VALUE:v")]),
+        headers=auth_headers)
+    assert res.status_code == 201
+    name = res.json()["name"]
+    assert name is not None
+    # Auto-name is slugified from proj_id + cmp_id + date — proj/cmp labels appear in it
+    assert "NAME-Proj-6" in name or "NAME_Proj_6" in name
+    assert "NAME-Cmp-6" in name or "NAME_Cmp_6" in name
+
+
+# ── Search endpoint ───────────────────────────────────────────────────────────
+
+async def test_search_requires_auth(client: AsyncClient):
+    res = await client.get(SEARCH_URL, params={"q": "anything"})
+    assert res.status_code == 401
+
+
+async def test_search_by_name(client: AsyncClient, auth_headers: dict):
+    proj, cmp = "SRCH-Proj-1", "SRCH-Cmp-1"
+    payload = {**write_payload(proj, cmp, [flat_entry("k", "VALUE:v")]), "name": "special-search-name-abc"}
+    await client.post(WRITE_URL, json=payload, headers=auth_headers)
+
+    res = await client.get(SEARCH_URL, params={"q": "special-search-name-abc"}, headers=auth_headers)
+    assert res.status_code == 200
+    items = res.json()
+    assert any(i["name"] == "special-search-name-abc" for i in items)
+
+
+async def test_search_by_name_partial(client: AsyncClient, auth_headers: dict):
+    proj, cmp = "SRCH-Proj-2", "SRCH-Cmp-2"
+    payload = {**write_payload(proj, cmp, [flat_entry("k", "VALUE:v")]), "name": "partial-match-xyz-config"}
+    await client.post(WRITE_URL, json=payload, headers=auth_headers)
+
+    res = await client.get(SEARCH_URL, params={"q": "partial-match-xyz"}, headers=auth_headers)
+    assert res.status_code == 200
+    assert any(i["name"] == "partial-match-xyz-config" for i in res.json())
+
+
+async def test_search_by_proj_id(client: AsyncClient, auth_headers: dict):
+    proj, cmp = "SRCH-UniqueProj-99", "SRCH-Cmp-3"
+    await client.post(WRITE_URL,
+        json=write_payload(proj, cmp, [flat_entry("k", "VALUE:v")]),
+        headers=auth_headers)
+
+    res = await client.get(SEARCH_URL, params={"q": "SRCH-UniqueProj-99"}, headers=auth_headers)
+    assert res.status_code == 200
+    assert any(i["proj_id"] == proj for i in res.json())
+
+
+async def test_search_by_cmp_id(client: AsyncClient, auth_headers: dict):
+    proj, cmp = "SRCH-Proj-4", "SRCH-UniqueCmp-88"
+    await client.post(WRITE_URL,
+        json=write_payload(proj, cmp, [flat_entry("k", "VALUE:v")]),
+        headers=auth_headers)
+
+    res = await client.get(SEARCH_URL, params={"q": "SRCH-UniqueCmp-88"}, headers=auth_headers)
+    assert res.status_code == 200
+    assert any(i["cmp_id"] == cmp for i in res.json())
+
+
+async def test_search_by_key_uuids(client: AsyncClient, auth_headers: dict):
+    proj, cmp = "SRCH-Proj-5", "SRCH-Cmp-5"
+    key_uuid = "search-name-node-uuid-unique-001"
+    await client.post(WRITE_URL,
+        json=write_payload(proj, cmp, [flat_entry(key_uuid, "VALUE:val")]),
+        headers=auth_headers)
+
+    res = await client.get(SEARCH_URL,
+        params={"key_uuids": key_uuid},
+        headers=auth_headers)
+    assert res.status_code == 200
+    uuids_found = [i["config_relation_uuid"] for i in res.json()]
+    assert len(uuids_found) >= 1
+
+
+async def test_search_key_uuid_not_in_unrelated_config(client: AsyncClient, auth_headers: dict):
+    """A config without the given key UUID must not appear in key_uuid results."""
+    proj, cmp = "SRCH-Proj-6", "SRCH-Cmp-6"
+    target_key = "target-name-node-uuid-002"
+    other_key = "other-name-node-uuid-002"
+
+    target_res = await client.post(WRITE_URL,
+        json=write_payload(proj, cmp, [flat_entry(target_key, "VALUE:v1")]),
+        headers=auth_headers)
+    other_res = await client.post(WRITE_URL,
+        json=write_payload(proj + "b", cmp + "b", [flat_entry(other_key, "VALUE:v2")]),
+        headers=auth_headers)
+
+    target_cr = target_res.json()["config_relation_uuid"]
+    other_cr = other_res.json()["config_relation_uuid"]
+
+    res = await client.get(SEARCH_URL,
+        params={"key_uuids": target_key},
+        headers=auth_headers)
+    assert res.status_code == 200
+    found_uuids = {i["config_relation_uuid"] for i in res.json()}
+    assert target_cr in found_uuids
+    assert other_cr not in found_uuids
+
+
+async def test_search_no_results(client: AsyncClient, auth_headers: dict):
+    res = await client.get(SEARCH_URL,
+        params={"q": "zzz-this-matches-nothing-zzz-9999"},
+        headers=auth_headers)
+    assert res.status_code == 200
+    assert res.json() == []
+
+
+async def test_search_returns_name_and_proj_cmp(client: AsyncClient, auth_headers: dict):
+    """Search results must include name, proj_id, and cmp_id fields."""
+    proj, cmp = "SRCH-Proj-7", "SRCH-Cmp-7"
+    payload = {**write_payload(proj, cmp, [flat_entry("k", "VALUE:v")]), "name": "field-check-config"}
+    await client.post(WRITE_URL, json=payload, headers=auth_headers)
+
+    res = await client.get(SEARCH_URL, params={"q": "field-check-config"}, headers=auth_headers)
+    assert res.status_code == 200
+    item = next(i for i in res.json() if i.get("name") == "field-check-config")
+    assert item["proj_id"] == proj
+    assert item["cmp_id"] == cmp
+    assert "approval_status" in item
+    assert "date_created" in item
+
+
+async def test_search_pagination(client: AsyncClient, auth_headers: dict):
+    """limit param caps the result count."""
+    proj = "SRCH-Page-Proj-1"
+    for i in range(5):
+        await client.post(WRITE_URL,
+            json={**write_payload(proj, f"SRCH-Page-Cmp-{i}", [flat_entry("k", "VALUE:v")]),
+                  "name": f"page-test-config-{i}"},
+            headers=auth_headers)
+
+    res = await client.get(SEARCH_URL,
+        params={"q": "page-test-config", "limit": 3},
+        headers=auth_headers)
+    assert res.status_code == 200
+    assert len(res.json()) <= 3

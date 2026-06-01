@@ -1,11 +1,13 @@
 import logging
+import re
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.company import Company
 from app.models.config_table import CT, GT, ConfigRelation, ConfigRelationUser
-from app.models.project import ProjectTemplateVersion
+from app.models.project import Project, ProjectTemplateVersion
 from app.schemas.config_table import ConfigApprovalResponse, ConfigEntrySchema, ConfigHistoryItem, ConfigPromoteByUuidRequest, ConfigPromoteRequest, ConfigReadResponse, ConfigWriteRequest, CTRowResponse, GroupEntrySchema
 
 logger = logging.getLogger(__name__)
@@ -15,7 +17,29 @@ class ConfigTableService:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
 
+    @staticmethod
+    def _slugify(text: str) -> str:
+        """Replace whitespace runs with underscores and strip non-word characters."""
+        text = text.strip()
+        text = re.sub(r"\s+", "_", text)
+        text = re.sub(r"[^\w\-]", "", text)
+        return text
+
+    async def _build_default_name(self, proj_id: str, cmp_id: str) -> str:
+        proj_result = await self.db.execute(select(Project).where(Project.proj_id == proj_id))
+        proj = proj_result.scalar_one_or_none()
+        cmp_result = await self.db.execute(select(Company).where(Company.cmp_id == cmp_id))
+        cmp = cmp_result.scalar_one_or_none()
+        proj_label = self._slugify(proj.display_name if proj else proj_id)
+        cmp_label = self._slugify(cmp.display_name if cmp else cmp_id)
+        date_str = datetime.now(timezone.utc).strftime("%Y_%m_%d")
+        return f"{proj_label}_{cmp_label}_{date_str}"
+
     async def write_config(self, payload: ConfigWriteRequest) -> ConfigReadResponse:
+        name = payload.name.strip() if payload.name and payload.name.strip() else None
+        if not name:
+            name = await self._build_default_name(payload.proj_id, payload.cmp_id)
+
         # New config_relation starts as pending — approval required before it becomes latest
         cr = ConfigRelation(
             proj_id=payload.proj_id,
@@ -26,6 +50,7 @@ class ConfigTableService:
             approval_status="pending",
             change_description=payload.change_description,
             promoted_from_uuid=payload.source_snapshot_uuid,
+            name=name,
         )
         self.db.add(cr)
         await self.db.flush()  # get cr.uuid
@@ -52,6 +77,7 @@ class ConfigTableService:
             date_created=cr.date_created,
             environment=cr.environment,
             rows=[CTRowResponse(uuid=ct.uuid, key=ct.key, val=ct.val) for ct in ct_rows],
+            name=cr.name,
         )
 
     def _insert_gt_rows(self, entries: list[GroupEntrySchema]) -> None:
@@ -268,6 +294,9 @@ class ConfigTableService:
                 rejection_reason=cr.rejection_reason,
                 change_description=cr.change_description,
                 promoted_from_uuid=cr.promoted_from_uuid,
+                name=cr.name,
+                proj_id=cr.proj_id,
+                cmp_id=cr.cmp_id,
             ))
         return items
 
@@ -303,6 +332,7 @@ class ConfigTableService:
             promoted_from_uuid=cr.promoted_from_uuid,
             proj_id=cr.proj_id,
             cmp_id=cr.cmp_id,
+            name=cr.name,
         )
 
     async def get_config(self, proj_id: str, cmp_id: str, environment: str = "production") -> ConfigReadResponse | None:
@@ -408,3 +438,84 @@ class ConfigTableService:
             approved_at=cr.approved_at,
             rejection_reason=cr.rejection_reason,
         )
+
+    async def search_configs(
+        self,
+        q: str | None,
+        key_uuids: list[str] | None,
+        proj_id: str | None,
+        cmp_id: str | None,
+        environment: str | None,
+        skip: int,
+        limit: int,
+    ) -> list[ConfigHistoryItem]:
+        stmt = select(ConfigRelation)
+
+        filters = []
+        if q:
+            pattern = f"%{q}%"
+            filters.append(or_(
+                ConfigRelation.name.ilike(pattern),
+                ConfigRelation.proj_id.ilike(pattern),
+                ConfigRelation.cmp_id.ilike(pattern),
+            ))
+        if proj_id:
+            filters.append(ConfigRelation.proj_id == proj_id)
+        if cmp_id:
+            filters.append(ConfigRelation.cmp_id == cmp_id)
+        if environment:
+            filters.append(ConfigRelation.environment == environment)
+
+        if key_uuids:
+            # subquery: config_relation_uuids that have at least one matching CT key
+            sub = select(CT.config_relation_uuid).where(CT.key.in_(key_uuids)).distinct()
+            filters.append(ConfigRelation.uuid.in_(sub))
+
+        if filters:
+            stmt = stmt.where(*filters)
+
+        stmt = stmt.order_by(ConfigRelation.date_created.desc()).offset(skip).limit(limit)
+        cr_result = await self.db.execute(stmt)
+        relations = list(cr_result.scalars().all())
+
+        items: list[ConfigHistoryItem] = []
+        for cr in relations:
+            ct_count = await self.db.scalar(
+                select(func.count(CT.uuid)).where(CT.config_relation_uuid == cr.uuid)
+            )
+            user_result = await self.db.execute(
+                select(ConfigRelationUser.user_id)
+                .where(ConfigRelationUser.config_relation_uuid == cr.uuid)
+                .limit(1)
+            )
+            created_by = user_result.scalar_one_or_none()
+
+            tmpl_version_number: int | None = None
+            if cr.template_version_uuid:
+                tv_result = await self.db.execute(
+                    select(ProjectTemplateVersion.version_number)
+                    .where(ProjectTemplateVersion.uuid == cr.template_version_uuid)
+                )
+                tmpl_version_number = tv_result.scalar_one_or_none()
+
+            items.append(ConfigHistoryItem(
+                config_relation_uuid=cr.uuid,
+                date_created=cr.date_created,
+                date_deleted=cr.date_deleted,
+                created_by=created_by,
+                entry_count=ct_count or 0,
+                is_latest=cr.latest,
+                environment=cr.environment,
+                template_version_uuid=cr.template_version_uuid,
+                template_version_number=tmpl_version_number,
+                approval_status=cr.approval_status,
+                approved_by=cr.approved_by,
+                approved_at=cr.approved_at,
+                rejection_reason=cr.rejection_reason,
+                change_description=cr.change_description,
+                promoted_from_uuid=cr.promoted_from_uuid,
+                name=cr.name,
+                proj_id=cr.proj_id,
+                cmp_id=cr.cmp_id,
+            ))
+        return items

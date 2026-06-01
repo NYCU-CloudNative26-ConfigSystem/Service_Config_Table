@@ -167,6 +167,33 @@ async def reject_config(
 
 
 @router.get(
+    "/search",
+    response_model=list[ConfigHistoryItem],
+    summary="Search configs by name, project, company, or contained key UUIDs",
+)
+async def search_configs(
+    q: str | None = Query(None, description="Text to match against name, proj_id, or cmp_id"),
+    key_uuids: list[str] = Query(default=[], description="NameNode UUIDs — return configs containing any of these keys"),
+    proj_id: str | None = Query(None, description="Exact project filter"),
+    cmp_id: str | None = Query(None, description="Exact company filter"),
+    environment: str | None = Query(None, description="Exact environment filter"),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
+    svc: ConfigTableService = Depends(_svc),
+    _: CurrentUser = Depends(get_current_user),
+):
+    return await svc.search_configs(
+        q=q,
+        key_uuids=key_uuids or None,
+        proj_id=proj_id,
+        cmp_id=cmp_id,
+        environment=environment,
+        skip=skip,
+        limit=limit,
+    )
+
+
+@router.get(
     "/{uuid}",
     response_model=ConfigReadResponse,
     summary="Get a specific config snapshot by UUID",

@@ -21,6 +21,7 @@ class ConfigRelation(Base):
     environment: Mapped[str] = mapped_column(String(20), nullable=False, default="production", index=True)
     template_version_uuid: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
+    name: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     approval_status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending", index=True)
     approved_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
