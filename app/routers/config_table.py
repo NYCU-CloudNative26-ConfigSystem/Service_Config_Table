@@ -181,3 +181,16 @@ async def get_config_by_uuid(
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Config snapshot not found")
     return result
+
+
+@router.get(
+    "/{uuid}/children",
+    response_model=list[ConfigHistoryItem],
+    summary="Get all snapshots that were inherited from the given snapshot",
+)
+async def get_config_children(
+    uuid: str,
+    svc: ConfigTableService = Depends(_svc),
+    _: CurrentUser = Depends(get_current_user),
+):
+    return await svc.get_children(uuid)

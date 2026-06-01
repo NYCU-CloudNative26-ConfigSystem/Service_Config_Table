@@ -377,6 +377,44 @@ class ConfigTableService:
             rejection_reason=cr.rejection_reason,
         )
 
+    async def get_children(self, uuid: str) -> list[ConfigHistoryItem]:
+        cr_result = await self.db.execute(
+            select(ConfigRelation)
+            .where(ConfigRelation.promoted_from_uuid == uuid)
+            .order_by(ConfigRelation.date_created.asc())
+        )
+        relations = list(cr_result.scalars().all())
+
+        items: list[ConfigHistoryItem] = []
+        for cr in relations:
+            ct_count = await self.db.scalar(
+                select(func.count(CT.uuid)).where(CT.config_relation_uuid == cr.uuid)
+            )
+            user_result = await self.db.execute(
+                select(ConfigRelationUser.user_id)
+                .where(ConfigRelationUser.config_relation_uuid == cr.uuid)
+                .limit(1)
+            )
+            created_by = user_result.scalar_one_or_none()
+            items.append(ConfigHistoryItem(
+                config_relation_uuid=cr.uuid,
+                date_created=cr.date_created,
+                date_deleted=cr.date_deleted,
+                created_by=created_by,
+                entry_count=ct_count or 0,
+                is_latest=cr.latest,
+                environment=cr.environment,
+                template_version_uuid=cr.template_version_uuid,
+                template_version_number=None,
+                approval_status=cr.approval_status,
+                approved_by=cr.approved_by,
+                approved_at=cr.approved_at,
+                rejection_reason=cr.rejection_reason,
+                change_description=cr.change_description,
+                promoted_from_uuid=cr.promoted_from_uuid,
+            ))
+        return items
+
     async def reject_config(self, config_uuid: str, rejector_id: str, reason: str | None) -> ConfigApprovalResponse:
         result = await self.db.execute(select(ConfigRelation).where(ConfigRelation.uuid == config_uuid))
         cr = result.scalar_one_or_none()
