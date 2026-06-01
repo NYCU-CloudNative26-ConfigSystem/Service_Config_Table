@@ -69,9 +69,14 @@ async def add_company(
 @router.delete("/{proj_id}", status_code=204)
 async def delete_project(
     proj_id: str,
-    _: CurrentUser = Depends(get_current_user),
+    current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    project = await project_service.get_project(db, proj_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail=f"Project '{proj_id}' not found")
+    if project.created_by != current_user.username:
+        raise HTTPException(status_code=403, detail="Only the project creator can delete this project")
     try:
         await project_service.delete_project(db, proj_id)
     except LookupError as e:
@@ -83,9 +88,14 @@ async def delete_project(
 async def remove_company(
     proj_id: str,
     cmp_id: str,
-    _: CurrentUser = Depends(get_current_user),
+    current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    project = await project_service.get_project(db, proj_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail=f"Project '{proj_id}' not found")
+    if project.created_by != current_user.username:
+        raise HTTPException(status_code=403, detail="Only the project creator can remove companies")
     try:
         await project_service.remove_company(db, proj_id, cmp_id)
     except LookupError as e:
