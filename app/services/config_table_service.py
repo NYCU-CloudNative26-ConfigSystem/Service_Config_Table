@@ -36,7 +36,7 @@ class ConfigTableService:
         return f"{proj_label}_{cmp_label}_{date_str}"
 
     async def write_config(self, payload: ConfigWriteRequest) -> ConfigReadResponse:
-        name = self._slugify(payload.name) if payload.name and payload.name.strip() else None
+        name = payload.name.strip() if payload.name and payload.name.strip() else None
         if not name:
             name = await self._build_default_name(payload.proj_id, payload.cmp_id)
 
