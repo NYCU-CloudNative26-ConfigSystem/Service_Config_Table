@@ -29,6 +29,7 @@ class ConfigWriteRequest(BaseModel):
     template_version_uuid: str | None = None
     change_description: str | None = None
     source_snapshot_uuid: str | None = None
+    name: str | None = None
 
 
 class ConfigPromoteRequest(BaseModel):
@@ -72,6 +73,7 @@ class ConfigReadResponse(BaseModel):
     promoted_from_uuid: str | None = None
     proj_id: str | None = None
     cmp_id: str | None = None
+    name: str | None = None
 
 
 class ConfigApprovalResponse(BaseModel):
@@ -98,3 +100,6 @@ class ConfigHistoryItem(BaseModel):
     rejection_reason: str | None = None
     change_description: str | None = None
     promoted_from_uuid: str | None = None
+    name: str | None = None
+    proj_id: str | None = None
+    cmp_id: str | None = None
