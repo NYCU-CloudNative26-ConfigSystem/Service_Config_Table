@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.connection import get_db
 from app.routers.deps import CurrentUser, get_current_user
-from app.schemas.config_table import ConfigApprovalResponse, ConfigHistoryItem, ConfigPromoteByUuidRequest, ConfigPromoteRequest, ConfigReadResponse, ConfigWriteRequest, RejectRequest
+from app.schemas.config_table import ConfigApprovalResponse, ConfigHistoryItem, ConfigPromoteByUuidRequest, ConfigPromoteRequest, ConfigReadResponse, ConfigUpdateRequest, ConfigWriteRequest, RejectRequest
 from app.services.config_table_service import ConfigTableService
 
 logger = logging.getLogger(__name__)
@@ -191,6 +191,30 @@ async def search_configs(
         skip=skip,
         limit=limit,
     )
+
+
+@router.patch(
+    "/{config_uuid}",
+    response_model=ConfigReadResponse,
+    summary="Edit a pending config snapshot in place (reviewer/admin only)",
+)
+async def update_pending_config(
+    config_uuid: str,
+    payload: ConfigUpdateRequest,
+    svc: ConfigTableService = Depends(_svc),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    from fastapi import HTTPException
+    if current_user.role not in ("reviewer", "admin"):
+        raise HTTPException(status_code=403, detail="Only reviewers and admins can edit pending configs")
+    try:
+        return await svc.update_pending_config(config_uuid, payload.entries, editor_id=current_user.username)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
 
 
 @router.get(

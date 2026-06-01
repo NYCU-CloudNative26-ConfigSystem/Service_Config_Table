@@ -47,6 +47,10 @@ class RejectRequest(BaseModel):
     reason: str | None = None
 
 
+class ConfigUpdateRequest(BaseModel):
+    entries: list[ConfigEntrySchema]
+
+
 # ── Outgoing ──────────────────────────────────────────────────────────────────
 
 class CTRowResponse(BaseModel):
