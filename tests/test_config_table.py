@@ -9,6 +9,8 @@ Run:  docker compose exec service-config-table python -m pytest tests/ -v
 import pytest
 from httpx import AsyncClient
 
+from app.services.config_table_service import ConfigTableService
+
 pytestmark = pytest.mark.asyncio
 
 WRITE_URL = "/api/v1/config/"
@@ -57,6 +59,11 @@ async def test_read_requires_auth(client: AsyncClient):
 async def test_history_requires_auth(client: AsyncClient):
     res = await client.get(HIST_URL, params={"proj_id": "X", "cmp_id": "Y"})
     assert res.status_code == 401
+
+
+async def test_similarity_report_requires_reviewer_role(client: AsyncClient, auth_headers: dict):
+    res = await client.get("/api/v1/config/does-not-matter/review-similarity", headers=auth_headers)
+    assert res.status_code == 403
 
 
 # ── Write config ──────────────────────────────────────────────────────────────
@@ -947,6 +954,70 @@ async def test_search_returns_name_and_proj_cmp(client: AsyncClient, auth_header
     assert item["cmp_id"] == cmp
     assert "approval_status" in item
     assert "date_created" in item
+
+
+async def test_similarity_report_returns_matches(client: AsyncClient, reviewer_headers: dict, monkeypatch: pytest.MonkeyPatch):
+    proj, cmp = "SIM-Proj-1", "SIM-Cmp-1"
+    source_res = await client.post(
+        WRITE_URL,
+        json=write_payload(proj, cmp, [flat_entry("name-source-key", "VALUE:source-value")]),
+        headers=reviewer_headers,
+    )
+    candidate_res = await client.post(
+        WRITE_URL,
+        json=write_payload(proj, cmp, [flat_entry("name-candidate-key", "VALUE:candidate-value")]),
+        headers=reviewer_headers,
+    )
+    source_uuid = source_res.json()["config_relation_uuid"]
+
+    async def fake_ssot_get_json(self, path: str, token: str, params: dict | None = None):
+        node_map = {
+            "name-source-key": {"type": "name", "uuid": "name-source-key", "name_val": "server.port"},
+            "name-candidate-key": {"type": "name", "uuid": "name-candidate-key", "name_val": "server.port.default"},
+            "source-value": {"type": "value", "uuid": "source-value", "val": "8080", "is_sensitive": False},
+            "candidate-value": {"type": "value", "uuid": "candidate-value", "val": "8081", "is_sensitive": False},
+        }
+
+        if path.startswith("/api/v1/node/"):
+            node_uuid = path.rsplit("/", 1)[-1]
+            return node_map.get(node_uuid)
+        if path in ("/api/v1/search", "/api/v1/search/value"):
+            return []
+        if path.startswith("/api/v1/truth/"):
+            return {"latestName": params.get("latestName") if params else None}
+        raise AssertionError(f"Unexpected SSOT path: {path}")
+
+    monkeypatch.setattr(ConfigTableService, "_ssot_get_json", fake_ssot_get_json)
+
+    res = await client.get(
+        f"/api/v1/config/{source_uuid}/review-similarity",
+        params={"limit": 5, "threshold": 0.25},
+        headers=reviewer_headers,
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["config_relation_uuid"] == source_uuid
+    assert body["candidate_count"] >= 1
+    assert body["source_entry_count"] == 1
+    assert any(c["config_relation_uuid"] == candidate_res.json()["config_relation_uuid"] for c in body["candidates"])
+    candidate = next(c for c in body["candidates"] if c["config_relation_uuid"] == candidate_res.json()["config_relation_uuid"])
+    assert candidate["matched_entries"]
+    assert candidate["matched_entries"][0]["source_key_alias"] == "server.port"
+    assert candidate["matched_entries"][0]["display_state"] == "shown"
+
+
+async def test_pending_reviews_endpoint_lists_pending_configs(client: AsyncClient, reviewer_headers: dict, auth_headers: dict):
+    proj, cmp = "PEND-Proj-1", "PEND-Cmp-1"
+    write_res = await client.post(
+        WRITE_URL,
+        json=write_payload(proj, cmp, [flat_entry("name-pending-key", "VALUE:pending-value")]),
+        headers=auth_headers,
+    )
+    assert write_res.status_code == 201
+
+    res = await client.get("/api/v1/config/pending", headers=reviewer_headers)
+    assert res.status_code == 200, res.text
+    assert any(item["config_relation_uuid"] == write_res.json()["config_relation_uuid"] for item in res.json())
 
 
 async def test_search_pagination(client: AsyncClient, auth_headers: dict):

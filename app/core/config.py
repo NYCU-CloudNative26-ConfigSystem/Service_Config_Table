@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     # Config Service (Key/Value ID validation)
     config_service_url: str = "http://config-service:8000"
 
+    # SSOT Service (fuzzy search / node resolution)
+    ssot_service_url: str = "http://service-ssot:3000"
+
     # Version Control Service (append-only key history)
     version_control_service_url: str = "http://version-control-service:18003"
 

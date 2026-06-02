@@ -1,14 +1,32 @@
 import logging
 import re
+from collections import defaultdict
 from datetime import datetime, timezone
+from difflib import SequenceMatcher
 
+import httpx
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.models.company import Company
 from app.models.config_table import CT, GT, ConfigRelation, ConfigRelationUser
 from app.models.project import Project, ProjectTemplateVersion
-from app.schemas.config_table import ConfigApprovalResponse, ConfigEntrySchema, ConfigHistoryItem, ConfigPromoteByUuidRequest, ConfigPromoteRequest, ConfigReadResponse, ConfigWriteRequest, CTRowResponse, GroupEntrySchema
+from app.schemas.config_table import (
+    CTRowResponse,
+    ConfigApprovalResponse,
+    ConfigEntrySchema,
+    ConfigHistoryItem,
+    ConfigPromoteByUuidRequest,
+    ConfigPromoteRequest,
+    ConfigReadResponse,
+    ConfigWriteRequest,
+    GroupEntrySchema,
+    ReviewSimilarityCandidate,
+    ReviewSimilarityEntryMatch,
+    ReviewSimilarityReport,
+    ReviewSimilaritySourceEntry,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +42,120 @@ class ConfigTableService:
         text = re.sub(r"\s+", "_", text)
         text = re.sub(r"[^\w\-]", "", text)
         return text
+
+    @staticmethod
+    def _strip_ref(ref: str) -> str:
+        if ref.startswith("VALUE:") or ref.startswith("GROUP:"):
+            return ref[6:]
+        return ref
+
+    @staticmethod
+    def _normalize_text(text: str | None) -> str:
+        return re.sub(r"\s+", " ", (text or "").strip()).lower()
+
+    @staticmethod
+    def _text_similarity(left: str | None, right: str | None) -> float:
+        left_norm = ConfigTableService._normalize_text(left)
+        right_norm = ConfigTableService._normalize_text(right)
+        if not left_norm or not right_norm:
+            return 0.0
+        return SequenceMatcher(None, left_norm, right_norm).ratio()
+
+    async def _ssot_get_json(self, path: str, token: str, params: dict[str, str] | None = None):
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            response = await client.get(
+                f"{settings.ssot_service_url}{path}",
+                params=params,
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            response.raise_for_status()
+            return response.json()
+
+    async def _resolve_ssot_node(self, node_uuid: str, token: str, node_cache: dict[str, dict | None]) -> dict | None:
+        if node_uuid in node_cache:
+            return node_cache[node_uuid]
+        try:
+            node = await self._ssot_get_json(f"/api/v1/node/{node_uuid}", token)
+        except httpx.HTTPError as exc:
+            logger.warning("Failed to resolve SSOT node %s: %s", node_uuid, exc)
+            node = None
+        node_cache[node_uuid] = node
+        return node
+
+    async def _resolve_display_value(
+        self,
+        ref: str,
+        token: str,
+        node_cache: dict[str, dict | None],
+        depth: int = 0,
+    ) -> str:
+        if depth > 6:
+            return "…"
+
+        node = await self._resolve_ssot_node(self._strip_ref(ref), token, node_cache)
+        if not node:
+            return ref
+
+        node_type = node.get("type")
+        if node_type == "value":
+            if node.get("is_sensitive"):
+                return "(sensitive)"
+            return str(node.get("val") or "")
+        if node_type == "name":
+            return str(node.get("name_val") or ref)
+        if node_type == "group":
+            entries = node.get("entries") or []
+            if not entries:
+                return "[]" if node.get("isArray") else "{}"
+            parts: list[str] = []
+            for entry in entries:
+                key_node = await self._resolve_ssot_node(str(entry.get("key")), token, node_cache)
+                key_display = str(key_node.get("name_val") or entry.get("key")) if key_node and key_node.get("type") == "name" else str(entry.get("key"))
+                value_display = await self._resolve_display_value(str(entry.get("val")), token, node_cache, depth + 1)
+                parts.append(f"{key_display}: {value_display}")
+            return f"[ {', '.join(parts)} ]" if node.get("isArray") else f"{{ {', '.join(parts)} }}"
+        return ref
+
+    async def _flatten_config_rows(
+        self,
+        rows: list[CTRowResponse],
+        token: str,
+        node_cache: dict[str, dict | None],
+    ) -> list[dict[str, str | bool]]:
+        flattened: list[dict[str, str | bool]] = []
+
+        async def visit_row(key_uuid: str, value_ref: str, path_parts: list[str]) -> None:
+            key_node = await self._resolve_ssot_node(key_uuid, token, node_cache)
+            key_alias = str(key_node.get("name_val") or key_uuid) if key_node and key_node.get("type") == "name" else key_uuid
+            next_path = path_parts + [key_alias]
+
+            value_node = await self._resolve_ssot_node(self._strip_ref(value_ref), token, node_cache)
+            if value_node and value_node.get("type") == "group":
+                flattened.append({
+                    "path": " › ".join(next_path),
+                    "key_uuid": key_uuid,
+                    "key_alias": key_alias,
+                    "value_ref": value_ref,
+                    "value_display": await self._resolve_display_value(value_ref, token, node_cache),
+                    "is_group": True,
+                })
+                for entry in value_node.get("entries") or []:
+                    await visit_row(str(entry.get("key")), str(entry.get("val")), next_path)
+                return
+
+            flattened.append({
+                "path": " › ".join(next_path),
+                "key_uuid": key_uuid,
+                "key_alias": key_alias,
+                "value_ref": value_ref,
+                "value_display": await self._resolve_display_value(value_ref, token, node_cache),
+                "is_group": False,
+            })
+
+        for row in rows:
+            await visit_row(row.key, row.val, [])
+
+        return flattened
 
     async def _build_default_name(self, proj_id: str, cmp_id: str) -> str:
         proj_result = await self.db.execute(select(Project).where(Project.proj_id == proj_id))
@@ -335,6 +467,273 @@ class ConfigTableService:
             name=cr.name,
         )
 
+
+    async def _search_candidate_configs(
+        self,
+        snapshot: ConfigReadResponse,
+        source_entries: list[dict[str, str | bool]],
+        token: str,
+    ) -> list[ConfigHistoryItem]:
+        candidate_ids: set[str] = set()
+        candidate_counts: dict[str, int] = defaultdict(int)
+        cmp_scope = snapshot.cmp_id or ""
+
+        for entry in source_entries:
+            key_alias = str(entry["key_alias"])
+            value_display = str(entry["value_display"])
+
+            if key_alias:
+                try:
+                    hits = await self._ssot_get_json("/api/v1/search", token, params={"q": key_alias, "cmpid": cmp_scope})
+                except httpx.HTTPError as exc:
+                    logger.warning("SSOT key search failed for %s: %s", key_alias, exc)
+                    hits = []
+
+                for hit in hits[:5]:
+                    truth_id = hit.get("truth")
+                    if not truth_id:
+                        continue
+                    try:
+                        truth_node = await self._ssot_get_json(f"/api/v1/truth/{truth_id}", token)
+                    except httpx.HTTPError:
+                        continue
+                    key_uuid = truth_node.get("latestName")
+                    if not key_uuid:
+                        continue
+                    try:
+                        configs = await self.search_configs(
+                            q=None,
+                            key_uuids=[str(key_uuid)],
+                            proj_id=snapshot.proj_id,
+                            cmp_id=snapshot.cmp_id,
+                            environment=None,
+                            skip=0,
+                            limit=10,
+                        )
+                    except Exception:
+                        configs = []
+                    for config in configs:
+                        if config.config_relation_uuid == snapshot.config_relation_uuid:
+                            continue
+                        candidate_ids.add(config.config_relation_uuid)
+                        candidate_counts[config.config_relation_uuid] += 1
+
+            if value_display and not bool(entry.get("is_group")):
+                try:
+                    hits = await self._ssot_get_json(
+                        "/api/v1/search/value",
+                        token,
+                        params={"q": value_display, "name": key_alias, "cmpid": cmp_scope},
+                    )
+                except httpx.HTTPError as exc:
+                    logger.warning("SSOT value search failed for %s: %s", key_alias, exc)
+                    hits = []
+
+                for hit in hits[:5]:
+                    truth_id = hit.get("truth")
+                    if not truth_id:
+                        continue
+                    try:
+                        truth_node = await self._ssot_get_json(f"/api/v1/truth/{truth_id}", token)
+                    except httpx.HTTPError:
+                        continue
+                    key_uuid = truth_node.get("latestName")
+                    if not key_uuid:
+                        continue
+                    try:
+                        configs = await self.search_configs(
+                            q=None,
+                            key_uuids=[str(key_uuid)],
+                            proj_id=snapshot.proj_id,
+                            cmp_id=snapshot.cmp_id,
+                            environment=None,
+                            skip=0,
+                            limit=10,
+                        )
+                    except Exception:
+                        configs = []
+                    for config in configs:
+                        if config.config_relation_uuid == snapshot.config_relation_uuid:
+                            continue
+                        candidate_ids.add(config.config_relation_uuid)
+                        candidate_counts[config.config_relation_uuid] += 1
+
+        if snapshot.proj_id or snapshot.cmp_id:
+            baseline = await self.search_configs(
+                q=None,
+                key_uuids=None,
+                proj_id=snapshot.proj_id,
+                cmp_id=snapshot.cmp_id,
+                environment=None,
+                skip=0,
+                limit=20,
+            )
+            for config in baseline:
+                if config.config_relation_uuid != snapshot.config_relation_uuid:
+                    candidate_ids.add(config.config_relation_uuid)
+                    candidate_counts[config.config_relation_uuid] += 1
+
+        if not candidate_ids:
+            return []
+
+        scored_candidates = sorted(candidate_ids, key=lambda cid: (candidate_counts[cid], cid), reverse=True)
+        result: list[ConfigHistoryItem] = []
+        for candidate_id in scored_candidates[:20]:
+            candidate = await self.get_config_by_uuid(candidate_id)
+            if candidate is None:
+                continue
+            result.append(
+                ConfigHistoryItem(
+                    config_relation_uuid=candidate.config_relation_uuid,
+                    date_created=candidate.date_created,
+                    date_deleted=None,
+                    created_by=candidate.created_by,
+                    entry_count=len(candidate.rows),
+                    is_latest=bool(candidate.is_latest),
+                    environment=candidate.environment,
+                    template_version_uuid=None,
+                    template_version_number=None,
+                    approval_status=candidate.approval_status or "pending",
+                    approved_by=candidate.approved_by,
+                    approved_at=candidate.approved_at,
+                    rejection_reason=candidate.rejection_reason,
+                    change_description=candidate.change_description,
+                    promoted_from_uuid=candidate.promoted_from_uuid,
+                    name=candidate.name,
+                    proj_id=candidate.proj_id,
+                    cmp_id=candidate.cmp_id,
+                )
+            )
+        return result
+
+    async def review_similarity_report(self, config_uuid: str, token: str, limit: int = 5, threshold: float = 0.45) -> ReviewSimilarityReport:
+        snapshot = await self.get_config_by_uuid(config_uuid)
+        if snapshot is None:
+            raise LookupError(f"Config snapshot '{config_uuid}' not found")
+
+        node_cache: dict[str, dict | None] = {}
+        source_entries = await self._flatten_config_rows(snapshot.rows, token, node_cache)
+        source_models = [
+            ReviewSimilaritySourceEntry(
+                path=str(entry["path"]),
+                key_uuid=str(entry["key_uuid"]),
+                key_alias=str(entry["key_alias"]),
+                value_ref=str(entry["value_ref"]),
+                value_display=str(entry["value_display"]),
+                is_group=bool(entry["is_group"]),
+            )
+            for entry in source_entries
+        ]
+
+        candidate_histories = await self._search_candidate_configs(snapshot, source_entries, token)
+
+        candidates: list[ReviewSimilarityCandidate] = []
+        for candidate_history in candidate_histories:
+            candidate_snapshot = await self.get_config_by_uuid(candidate_history.config_relation_uuid)
+            if candidate_snapshot is None:
+                continue
+
+            candidate_cache: dict[str, dict | None] = {}
+            candidate_entries = await self._flatten_config_rows(candidate_snapshot.rows, token, candidate_cache)
+            matched_entries: list[ReviewSimilarityEntryMatch] = []
+
+            for source_entry in source_entries:
+                best_match: dict[str, str | float] | None = None
+                best_score = 0.0
+                for candidate_entry in candidate_entries:
+                    key_score = self._text_similarity(str(source_entry["key_alias"]), str(candidate_entry["key_alias"]))
+                    value_score = self._text_similarity(str(source_entry["value_display"]), str(candidate_entry["value_display"]))
+                    path_score = self._text_similarity(str(source_entry["path"]), str(candidate_entry["path"]))
+                    score = (key_score * 0.5) + (value_score * 0.4) + (path_score * 0.1)
+                    if score > best_score:
+                        best_score = score
+                        best_match = {
+                            "candidate_path": str(candidate_entry["path"]),
+                            "candidate_key_alias": str(candidate_entry["key_alias"]),
+                            "candidate_value_display": str(candidate_entry["value_display"]),
+                            "candidate_value_ref": str(candidate_entry["value_ref"]),
+                            "match_kind": "key" if key_score >= value_score else "value",
+                            "score": score,
+                            "key_score": key_score,
+                            "value_score": value_score,
+                        }
+
+                if not best_match:
+                    continue
+
+                source_key = self._normalize_text(str(source_entry["key_alias"]))
+                candidate_key = self._normalize_text(str(best_match["candidate_key_alias"]))
+                source_value = self._normalize_text(str(source_entry["value_display"]))
+                candidate_value = self._normalize_text(str(best_match["candidate_value_display"]))
+                same_key = source_key == candidate_key
+                same_value = source_value != "" and source_value == candidate_value and not same_key
+                similar_key = not same_key and self._text_similarity(str(source_entry["key_alias"]), str(best_match["candidate_key_alias"])) >= 0.7
+
+                display_state = "hidden"
+                display_reason = "different_key_different_value"
+                if same_key:
+                    display_reason = "same_key"
+                elif same_value:
+                    display_state = "shown"
+                    display_reason = "same_value"
+                elif similar_key:
+                    display_state = "shown"
+                    display_reason = "similar_key"
+
+                if display_state == "hidden" and best_score < threshold:
+                    continue
+
+                matched_entries.append(
+                    ReviewSimilarityEntryMatch(
+                        source_path=str(source_entry["path"]),
+                        source_key_alias=str(source_entry["key_alias"]),
+                        source_value_display=str(source_entry["value_display"]),
+                        source_value_ref=str(source_entry["value_ref"]),
+                        candidate_path=str(best_match["candidate_path"]),
+                        candidate_key_alias=str(best_match["candidate_key_alias"]),
+                        candidate_value_display=str(best_match["candidate_value_display"]),
+                        candidate_value_ref=str(best_match["candidate_value_ref"]),
+                        match_kind=str(best_match["match_kind"]),
+                        score=float(best_match["score"]),
+                        display_state=display_state,
+                        display_reason=display_reason,
+                    )
+                )
+
+            if not matched_entries:
+                continue
+
+            avg_score = sum(match.score for match in matched_entries) / max(len(source_entries), 1)
+            candidates.append(
+                ReviewSimilarityCandidate(
+                    config_relation_uuid=candidate_snapshot.config_relation_uuid,
+                    date_created=candidate_snapshot.date_created,
+                    environment=candidate_snapshot.environment,
+                    approval_status=candidate_snapshot.approval_status or "pending",
+                    score=round(avg_score, 4),
+                    name=candidate_snapshot.name,
+                    proj_id=candidate_snapshot.proj_id,
+                    cmp_id=candidate_snapshot.cmp_id,
+                    matched_entries=sorted(matched_entries, key=lambda item: item.score, reverse=True)[:limit],
+                )
+            )
+
+        candidates.sort(key=lambda item: (item.score, item.date_created), reverse=True)
+
+        return ReviewSimilarityReport(
+            config_relation_uuid=snapshot.config_relation_uuid,
+            date_created=snapshot.date_created,
+            environment=snapshot.environment,
+            approval_status=snapshot.approval_status or "pending",
+            created_by=snapshot.created_by,
+            name=snapshot.name,
+            proj_id=snapshot.proj_id,
+            cmp_id=snapshot.cmp_id,
+            source_entry_count=len(source_models),
+            candidate_count=len(candidates),
+            source_entries=source_models,
+            candidates=candidates[:limit],
+        )
     async def get_config(self, proj_id: str, cmp_id: str, environment: str = "production") -> ConfigReadResponse | None:
         result = await self.db.execute(
             select(ConfigRelation).where(
@@ -524,8 +923,9 @@ class ConfigTableService:
         proj_id: str | None,
         cmp_id: str | None,
         environment: str | None,
-        skip: int,
-        limit: int,
+        approval_status: str | None = None,
+        skip: int = 0,
+        limit: int = 20,
     ) -> list[ConfigHistoryItem]:
         stmt = select(ConfigRelation)
 
@@ -543,6 +943,8 @@ class ConfigTableService:
             filters.append(ConfigRelation.cmp_id == cmp_id)
         if environment:
             filters.append(ConfigRelation.environment == environment)
+        if approval_status:
+            filters.append(ConfigRelation.approval_status == approval_status)
 
         if key_uuids:
             # subquery: config_relation_uuids that have at least one matching CT key
@@ -597,3 +999,15 @@ class ConfigTableService:
                 cmp_id=cr.cmp_id,
             ))
         return items
+
+    async def get_pending_reviews(self, skip: int = 0, limit: int = 20) -> list[ConfigHistoryItem]:
+        return await self.search_configs(
+            q=None,
+            key_uuids=None,
+            proj_id=None,
+            cmp_id=None,
+            environment=None,
+            approval_status="pending",
+            skip=skip,
+            limit=limit,
+        )
