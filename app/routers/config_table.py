@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.connection import get_db
 from app.routers.deps import CurrentUser, get_current_user
-from app.schemas.config_table import ConfigApprovalResponse, ConfigHistoryItem, ConfigPromoteByUuidRequest, ConfigPromoteRequest, ConfigReadResponse, ConfigUpdateRequest, ConfigWriteRequest, RejectRequest
+from app.schemas.config_table import ConfigApprovalResponse, ConfigHistoryItem, ConfigPromoteByUuidRequest, ConfigPromoteRequest, ConfigReadResponse, ConfigUpdateRequest, ConfigWriteRequest, RejectRequest, ReviewSimilarityReport
 from app.services.config_table_service import ConfigTableService
 
 logger = logging.getLogger(__name__)
@@ -177,6 +177,7 @@ async def search_configs(
     proj_id: str | None = Query(None, description="Exact project filter"),
     cmp_id: str | None = Query(None, description="Exact company filter"),
     environment: str | None = Query(None, description="Exact environment filter"),
+    approval_status: str | None = Query(None, description="Approval status filter"),
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
     svc: ConfigTableService = Depends(_svc),
@@ -188,9 +189,27 @@ async def search_configs(
         proj_id=proj_id,
         cmp_id=cmp_id,
         environment=environment,
+        approval_status=approval_status,
         skip=skip,
         limit=limit,
     )
+
+
+@router.get(
+    "/pending",
+    response_model=list[ConfigHistoryItem],
+    summary="List pending review snapshots",
+)
+async def get_pending_reviews(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
+    svc: ConfigTableService = Depends(_svc),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    from fastapi import HTTPException
+    if current_user.role not in ("reviewer", "admin"):
+        raise HTTPException(status_code=403, detail="Only reviewers and admins can view pending reviews")
+    return await svc.get_pending_reviews(skip=skip, limit=limit)
 
 
 @router.patch(
@@ -245,3 +264,24 @@ async def get_config_children(
     _: CurrentUser = Depends(get_current_user),
 ):
     return await svc.get_children(uuid)
+
+
+@router.get(
+    "/{uuid}/review-similarity",
+    response_model=ReviewSimilarityReport,
+    summary="Get reviewer similarity report for a config snapshot",
+)
+async def review_similarity_report(
+    uuid: str,
+    limit: int = Query(5, ge=1, le=20),
+    threshold: float = Query(0.45, ge=0.0, le=1.0),
+    svc: ConfigTableService = Depends(_svc),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    from fastapi import HTTPException
+    if current_user.role not in ("reviewer", "admin"):
+        raise HTTPException(status_code=403, detail="Only reviewers and admins can view similarity reports")
+    try:
+        return await svc.review_similarity_report(uuid, current_user.token, limit=limit, threshold=threshold)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
