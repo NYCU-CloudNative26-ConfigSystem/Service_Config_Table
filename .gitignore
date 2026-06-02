@@ -34,3 +34,4 @@ htmlcov/
 # SQLite (local dev / testing)
 *.db
 *.sqlite3
+
