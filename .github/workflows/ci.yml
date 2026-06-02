@@ -85,7 +85,7 @@ jobs:
         with:
           repository: NYCU-CloudNative26-ConfigSystem/config_system
           token: ${{ secrets.GH_PAT }}
-          sparse-checkout: 'k8s'
+          path: infra
       - uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
@@ -97,7 +97,7 @@ jobs:
             --region ${{ env.GKE_REGION }} --project ${{ secrets.GCP_PROJECT_ID }}
       - name: Ensure namespace + secrets
         run: |
-          envsubst < k8s/namespace.yaml | kubectl apply -f -
+          envsubst < infra/k8s/namespace.yaml | kubectl apply -f -
           kubectl create secret generic shared-secrets \
             --namespace=${{ env.K8S_NAMESPACE }} \
             --from-literal=SECRET_KEY="${{ secrets.SECRET_KEY }}" \
@@ -123,7 +123,7 @@ jobs:
           GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
         run: |
           export IMAGE_CONFIG_TABLE="${GAR_LOCATION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GAR_REPO}/config-table:${GITHUB_SHA}"
-          envsubst '${IMAGE_CONFIG_TABLE}${K8S_NAMESPACE}' < k8s/services/config-table.yaml | kubectl apply -f -
+          envsubst '${IMAGE_CONFIG_TABLE}${K8S_NAMESPACE}' < infra/k8s/services/config-table.yaml | kubectl apply -f -
           kubectl rollout status deployment/service-config-table -n "${K8S_NAMESPACE}" --timeout=300s
 
   deploy-production:
@@ -143,7 +143,7 @@ jobs:
         with:
           repository: NYCU-CloudNative26-ConfigSystem/config_system
           token: ${{ secrets.GH_PAT }}
-          sparse-checkout: 'k8s'
+          path: infra
       - uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
@@ -155,7 +155,7 @@ jobs:
             --region ${{ env.GKE_REGION }} --project ${{ secrets.GCP_PROJECT_ID }}
       - name: Ensure namespace + secrets
         run: |
-          envsubst < k8s/namespace.yaml | kubectl apply -f -
+          envsubst < infra/k8s/namespace.yaml | kubectl apply -f -
           kubectl create secret generic shared-secrets \
             --namespace=${{ env.K8S_NAMESPACE }} \
             --from-literal=SECRET_KEY="${{ secrets.SECRET_KEY }}" \
@@ -181,5 +181,5 @@ jobs:
           GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
         run: |
           export IMAGE_CONFIG_TABLE="${GAR_LOCATION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GAR_REPO}/config-table:${GITHUB_SHA}"
-          envsubst '${IMAGE_CONFIG_TABLE}${K8S_NAMESPACE}' < k8s/services/config-table.yaml | kubectl apply -f -
+          envsubst '${IMAGE_CONFIG_TABLE}${K8S_NAMESPACE}' < infra/k8s/services/config-table.yaml | kubectl apply -f -
           kubectl rollout status deployment/service-config-table -n "${K8S_NAMESPACE}" --timeout=300s
