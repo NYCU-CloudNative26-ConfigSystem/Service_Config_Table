@@ -28,6 +28,8 @@ class ConfigWriteRequest(BaseModel):
     entries: list[ConfigEntrySchema]
     template_version_uuid: str | None = None
     change_description: str | None = None
+    source_snapshot_uuid: str | None = None
+    name: str | None = None
 
 
 class ConfigPromoteRequest(BaseModel):
@@ -43,6 +45,10 @@ class ConfigPromoteByUuidRequest(BaseModel):
 
 class RejectRequest(BaseModel):
     reason: str | None = None
+
+
+class ConfigUpdateRequest(BaseModel):
+    entries: list[ConfigEntrySchema]
 
 
 # ── Outgoing ──────────────────────────────────────────────────────────────────
@@ -68,6 +74,61 @@ class ConfigReadResponse(BaseModel):
     created_by: str | None = None
     is_latest: bool | None = None
     change_description: str | None = None
+    promoted_from_uuid: str | None = None
+    proj_id: str | None = None
+    cmp_id: str | None = None
+    name: str | None = None
+
+
+class ReviewSimilaritySourceEntry(BaseModel):
+    path: str
+    key_uuid: str
+    key_alias: str
+    value_ref: str
+    value_display: str
+    is_group: bool = False
+
+
+class ReviewSimilarityEntryMatch(BaseModel):
+    source_path: str
+    source_key_alias: str
+    source_value_display: str
+    source_value_ref: str
+    candidate_path: str
+    candidate_key_alias: str
+    candidate_value_display: str
+    candidate_value_ref: str
+    match_kind: str
+    score: float
+    display_state: str
+    display_reason: str | None = None
+
+
+class ReviewSimilarityCandidate(BaseModel):
+    config_relation_uuid: str
+    date_created: datetime
+    environment: str
+    approval_status: str
+    score: float
+    name: str | None = None
+    proj_id: str | None = None
+    cmp_id: str | None = None
+    matched_entries: list[ReviewSimilarityEntryMatch]
+
+
+class ReviewSimilarityReport(BaseModel):
+    config_relation_uuid: str
+    date_created: datetime
+    environment: str
+    approval_status: str
+    created_by: str | None = None
+    name: str | None = None
+    proj_id: str | None = None
+    cmp_id: str | None = None
+    source_entry_count: int
+    candidate_count: int
+    source_entries: list[ReviewSimilaritySourceEntry]
+    candidates: list[ReviewSimilarityCandidate]
 
 
 class ConfigApprovalResponse(BaseModel):
@@ -93,3 +154,7 @@ class ConfigHistoryItem(BaseModel):
     approved_at: datetime | None = None
     rejection_reason: str | None = None
     change_description: str | None = None
+    promoted_from_uuid: str | None = None
+    name: str | None = None
+    proj_id: str | None = None
+    cmp_id: str | None = None

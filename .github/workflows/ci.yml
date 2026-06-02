@@ -2,31 +2,186 @@ name: CI
 
 on:
   push:
+    branches: [main, dev]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+
+env:
+  GAR_LOCATION: us-central1
+  GAR_REPO: config-system
+  GKE_CLUSTER: config-system
+  GKE_REGION: us-east1
+  CI_SECRET_KEY: test-secret-key-for-ci-minimum-32-chars
 
 jobs:
   test:
+    name: Test
     runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 5
     steps:
       - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -r requirements.txt
-      - run: pytest tests/ -v
+      - name: Run tests
+        run: pip install -r requirements.txt && pytest tests/ -v
         env:
-          SECRET_KEY: test-secret-key
+          SECRET_KEY: ${{ env.CI_SECRET_KEY }}
           DATABASE_URL: "sqlite+aiosqlite:///:memory:"
           REDIS_URL: redis://localhost:6379/0
 
-  build:
-    needs: test
+  build-push:
+    name: Build & Push
     runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/build-push-action@v6
         with:
-          context: .
-          push: false
-          tags: service-config-table:${{ github.sha }}
+          token: ${{ secrets.GH_PAT }}
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - run: gcloud auth configure-docker ${{ env.GAR_LOCATION }}-docker.pkg.dev --quiet
+      - name: Build and push
+        id: meta
+        env:
+          REGISTRY: ${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.GAR_REPO }}
+        run: |
+          docker build -t "$REGISTRY/config-table:${{ github.sha }}" -t "$REGISTRY/config-table:latest" .
+          docker push "$REGISTRY/config-table:${{ github.sha }}"
+          docker push "$REGISTRY/config-table:latest"
+          echo "image=$REGISTRY/config-table:${{ github.sha }}" >> $GITHUB_OUTPUT
+
+  deploy-staging:
+    name: Deploy · Staging
+    runs-on: ubuntu-latest
+    needs: build-push
+    if: needs.build-push.result == 'success' && github.ref == 'refs/heads/dev'
+    environment: staging
+    env:
+      K8S_NAMESPACE: config-system-staging
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout infra manifests
+        uses: actions/checkout@v4
+        with:
+          repository: NYCU-CloudNative26-ConfigSystem/config_system
+          token: ${{ secrets.GH_PAT }}
+          ref: ${{ github.ref_name }}
+          path: infra
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+      - uses: google-github-actions/setup-gcloud@v2
+        with:
+          install_components: gke-gcloud-auth-plugin
+      - run: |
+          gcloud container clusters get-credentials ${{ env.GKE_CLUSTER }} \
+            --region ${{ env.GKE_REGION }} --project ${{ secrets.GCP_PROJECT_ID }}
+      - name: Ensure namespace + secrets
+        run: |
+          envsubst < infra/k8s/namespace.yaml | kubectl apply -f -
+          kubectl create secret generic shared-secrets \
+            --namespace=${{ env.K8S_NAMESPACE }} \
+            --from-literal=SECRET_KEY="${{ secrets.SECRET_KEY }}" \
+            --from-literal=ENCRYPTION_KEY="${{ secrets.ENCRYPTION_KEY }}" \
+            --from-literal=POSTGRES_PASSWORD="${{ secrets.POSTGRES_PASSWORD }}" \
+            --from-literal=NEO4J_PASSWORD="${{ secrets.NEO4J_PASSWORD }}" \
+            --from-literal=NEO4J_AUTH="neo4j/${{ secrets.NEO4J_PASSWORD }}" \
+            --from-literal=DATABASE_URL_LOGIN="postgresql://user:${{ secrets.POSTGRES_PASSWORD }}@postgres-rw:5432/auth_service" \
+            --from-literal=DATABASE_URL_CONFIG="postgresql+asyncpg://user:${{ secrets.POSTGRES_PASSWORD }}@postgres-rw:5432/config_table_db" \
+            --from-literal=GMAIL_USER="${{ secrets.GMAIL_USER }}" \
+            --from-literal=GMAIL_APP_PASSWORD="${{ secrets.GMAIL_APP_PASSWORD }}" \
+            --from-literal=INTERNAL_API_KEY="${{ secrets.INTERNAL_API_KEY }}" \
+            --from-literal=APP_BASE_URL="${{ secrets.APP_BASE_URL }}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+      - name: Check infra readiness
+        run: |
+          kubectl get cluster postgres -n ${{ env.K8S_NAMESPACE }} &>/dev/null || {
+            echo "❌ Infra not ready. Run 'CI · Infra' workflow first."
+            exit 1
+          }
+      - name: Deploy
+        env:
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+        run: |
+          export IMAGE_CONFIG_TABLE="${GAR_LOCATION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GAR_REPO}/config-table:${GITHUB_SHA}"
+          envsubst '${IMAGE_CONFIG_TABLE}${K8S_NAMESPACE}' < infra/k8s/services/config-table.yaml | kubectl apply -f -
+          kubectl rollout status deployment/service-config-table -n "${K8S_NAMESPACE}" --timeout=600s
+
+  deploy-production:
+    name: Deploy · Production
+    runs-on: ubuntu-latest
+    needs: build-push
+    if: needs.build-push.result == 'success' && github.ref == 'refs/heads/main'
+    environment: production
+    env:
+      K8S_NAMESPACE: config-system
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout infra manifests
+        uses: actions/checkout@v4
+        with:
+          repository: NYCU-CloudNative26-ConfigSystem/config_system
+          token: ${{ secrets.GH_PAT }}
+          ref: ${{ github.ref_name }}
+          path: infra
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+      - uses: google-github-actions/setup-gcloud@v2
+        with:
+          install_components: gke-gcloud-auth-plugin
+      - run: |
+          gcloud container clusters get-credentials ${{ env.GKE_CLUSTER }} \
+            --region ${{ env.GKE_REGION }} --project ${{ secrets.GCP_PROJECT_ID }}
+      - name: Ensure namespace + secrets
+        run: |
+          envsubst < infra/k8s/namespace.yaml | kubectl apply -f -
+          kubectl create secret generic shared-secrets \
+            --namespace=${{ env.K8S_NAMESPACE }} \
+            --from-literal=SECRET_KEY="${{ secrets.SECRET_KEY }}" \
+            --from-literal=ENCRYPTION_KEY="${{ secrets.ENCRYPTION_KEY }}" \
+            --from-literal=POSTGRES_PASSWORD="${{ secrets.POSTGRES_PASSWORD }}" \
+            --from-literal=NEO4J_PASSWORD="${{ secrets.NEO4J_PASSWORD }}" \
+            --from-literal=NEO4J_AUTH="neo4j/${{ secrets.NEO4J_PASSWORD }}" \
+            --from-literal=DATABASE_URL_LOGIN="postgresql://user:${{ secrets.POSTGRES_PASSWORD }}@postgres-rw:5432/auth_service" \
+            --from-literal=DATABASE_URL_CONFIG="postgresql+asyncpg://user:${{ secrets.POSTGRES_PASSWORD }}@postgres-rw:5432/config_table_db" \
+            --from-literal=GMAIL_USER="${{ secrets.GMAIL_USER }}" \
+            --from-literal=GMAIL_APP_PASSWORD="${{ secrets.GMAIL_APP_PASSWORD }}" \
+            --from-literal=INTERNAL_API_KEY="${{ secrets.INTERNAL_API_KEY }}" \
+            --from-literal=APP_BASE_URL="${{ secrets.APP_BASE_URL }}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+      - name: Check infra readiness
+        run: |
+          kubectl get cluster postgres -n ${{ env.K8S_NAMESPACE }} &>/dev/null || {
+            echo "❌ Infra not ready. Run 'CI · Infra' workflow first."
+            exit 1
+          }
+      - name: Deploy
+        env:
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+        run: |
+          export IMAGE_CONFIG_TABLE="${GAR_LOCATION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GAR_REPO}/config-table:${GITHUB_SHA}"
+          envsubst '${IMAGE_CONFIG_TABLE}${K8S_NAMESPACE}' < infra/k8s/services/config-table.yaml | kubectl apply -f -
+          kubectl rollout status deployment/service-config-table -n "${K8S_NAMESPACE}" --timeout=600s

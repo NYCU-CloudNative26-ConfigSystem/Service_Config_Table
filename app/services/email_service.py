@@ -19,7 +19,7 @@ async def send_update_notification(
         logger.warning("Gmail credentials not configured — skipping email to %s", to_email)
         return
 
-    link = f"{settings.app_base_url.rstrip('/')}/config/{config_relation_uuid}" \
+    link = f"{settings.app_base_url.rstrip('/')}/config-update?config_uuid={config_relation_uuid}" \
         if settings.app_base_url else "(log in to the app to view your config)"
 
     msg = MIMEMultipart("alternative")

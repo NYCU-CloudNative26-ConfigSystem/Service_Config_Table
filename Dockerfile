@@ -12,5 +12,7 @@ COPY . .
 EXPOSE 18001
 
 COPY entrypoint.sh .
+# RUN sed -i 's/\r$//' entrypoint.sh
 RUN chmod +x entrypoint.sh
+# CMD ["sh", "./entrypoint.sh"]
 CMD ["./entrypoint.sh"]
