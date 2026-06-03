@@ -1034,3 +1034,92 @@ async def test_search_pagination(client: AsyncClient, auth_headers: dict):
         headers=auth_headers)
     assert res.status_code == 200
     assert len(res.json()) <= 3
+
+
+# ── Children endpoint ─────────────────────────────────────────────────────────
+
+async def test_get_children_returns_derived_snapshots(client, auth_headers, reviewer_headers):
+    """A promoted snapshot should appear as a child of the original."""
+    proj, cmp = "child-proj", "child-cmp"
+
+    # Create and approve parent
+    parent = (await client.post(WRITE_URL,
+        json=write_payload(proj, cmp, [flat_entry("X", "VALUE:v")], env="staging"),
+        headers=auth_headers)).json()
+    await approve(client, parent["config_relation_uuid"], reviewer_headers)
+
+    # Promote to production (creates a child)
+    promote_res = await client.post(
+        f"/api/v1/config/{parent['config_relation_uuid']}/promote",
+        json={"to_environment": "production"},
+        headers=auth_headers,
+    )
+    assert promote_res.status_code == 200
+    child_uuid = promote_res.json()["config_relation_uuid"]
+
+    # Children of parent should include the promoted snapshot
+    children_res = await client.get(
+        f"/api/v1/config/{parent['config_relation_uuid']}/children",
+        headers=auth_headers,
+    )
+    assert children_res.status_code == 200
+    child_uuids = [c["config_relation_uuid"] for c in children_res.json()]
+    assert child_uuid in child_uuids
+
+
+async def test_get_children_empty_for_leaf(client, auth_headers):
+    """A snapshot with no promotions has an empty children list."""
+    proj, cmp = "leaf-proj", "leaf-cmp"
+    snap = (await client.post(WRITE_URL,
+        json=write_payload(proj, cmp, [flat_entry("K", "VALUE:v")]),
+        headers=auth_headers)).json()
+
+    res = await client.get(
+        f"/api/v1/config/{snap['config_relation_uuid']}/children",
+        headers=auth_headers,
+    )
+    assert res.status_code == 200
+    assert res.json() == []
+
+
+# ── Update pending config (PATCH) ─────────────────────────────────────────────
+
+async def test_update_pending_config_changes_entries(client, auth_headers):
+    """PATCH on a pending snapshot replaces its entries."""
+    proj, cmp = "patch-proj", "patch-cmp"
+    snap = (await client.post(WRITE_URL,
+        json=write_payload(proj, cmp, [flat_entry("OLD_KEY", "VALUE:v1")]),
+        headers=auth_headers)).json()
+    uuid = snap["config_relation_uuid"]
+
+    patch_res = await client.patch(
+        f"/api/v1/config/{uuid}",
+        json={"entries": [flat_entry("NEW_KEY", "VALUE:v2")]},
+        headers=auth_headers,
+    )
+    assert patch_res.status_code == 200
+    assert patch_res.json()["config_relation_uuid"] == uuid
+
+    # Confirm updated content via history
+    hist = (await client.get(HIST_URL,
+        params={"proj_id": proj, "cmp_id": cmp, "environment": "production"},
+        headers=auth_headers)).json()
+    latest = next(h for h in hist if h["config_relation_uuid"] == uuid)
+    assert latest["entry_count"] == 1
+
+
+async def test_update_pending_config_rejected_after_approval(client, auth_headers, reviewer_headers):
+    """Cannot PATCH a snapshot that has already been approved."""
+    proj, cmp = "patch-approved-proj", "patch-approved-cmp"
+    snap = (await client.post(WRITE_URL,
+        json=write_payload(proj, cmp, [flat_entry("K", "VALUE:v")]),
+        headers=auth_headers)).json()
+    uuid = snap["config_relation_uuid"]
+    await approve(client, uuid, reviewer_headers)
+
+    patch_res = await client.patch(
+        f"/api/v1/config/{uuid}",
+        json={"entries": [flat_entry("K2", "VALUE:v2")]},
+        headers=auth_headers,
+    )
+    assert patch_res.status_code in (400, 409, 422)
