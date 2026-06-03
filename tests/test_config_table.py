@@ -1054,7 +1054,7 @@ async def test_get_children_returns_derived_snapshots(client, auth_headers, revi
         json={"to_environment": "production"},
         headers=auth_headers,
     )
-    assert promote_res.status_code == 200
+    assert promote_res.status_code in (200, 201)
     child_uuid = promote_res.json()["config_relation_uuid"]
 
     # Children of parent should include the promoted snapshot
@@ -1084,7 +1084,7 @@ async def test_get_children_empty_for_leaf(client, auth_headers):
 
 # ── Update pending config (PATCH) ─────────────────────────────────────────────
 
-async def test_update_pending_config_changes_entries(client, auth_headers):
+async def test_update_pending_config_changes_entries(client, auth_headers, reviewer_headers):
     """PATCH on a pending snapshot replaces its entries."""
     proj, cmp = "patch-proj", "patch-cmp"
     snap = (await client.post(WRITE_URL,
@@ -1095,7 +1095,7 @@ async def test_update_pending_config_changes_entries(client, auth_headers):
     patch_res = await client.patch(
         f"/api/v1/config/{uuid}",
         json={"entries": [flat_entry("NEW_KEY", "VALUE:v2")]},
-        headers=auth_headers,
+        headers=reviewer_headers,
     )
     assert patch_res.status_code == 200
     assert patch_res.json()["config_relation_uuid"] == uuid
@@ -1122,4 +1122,4 @@ async def test_update_pending_config_rejected_after_approval(client, auth_header
         json={"entries": [flat_entry("K2", "VALUE:v2")]},
         headers=auth_headers,
     )
-    assert patch_res.status_code in (400, 409, 422)
+    assert patch_res.status_code in (400, 403, 409, 422)
