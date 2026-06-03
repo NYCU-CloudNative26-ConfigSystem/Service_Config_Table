@@ -504,7 +504,7 @@ class ConfigTableService:
                         configs = await self.search_configs(
                             q=None,
                             key_uuids=[str(key_uuid)],
-                            proj_id=None,
+                            proj_id=snapshot.proj_id,
                             cmp_id=snapshot.cmp_id,
                             environment=None,
                             skip=0,
@@ -544,7 +544,7 @@ class ConfigTableService:
                         configs = await self.search_configs(
                             q=None,
                             key_uuids=[str(key_uuid)],
-                            proj_id=None,
+                            proj_id=snapshot.proj_id,
                             cmp_id=snapshot.cmp_id,
                             environment=None,
                             skip=0,
@@ -562,7 +562,7 @@ class ConfigTableService:
             baseline = await self.search_configs(
                 q=None,
                 key_uuids=None,
-                proj_id=None,
+                proj_id=snapshot.proj_id,
                 cmp_id=snapshot.cmp_id,
                 environment=None,
                 skip=0,

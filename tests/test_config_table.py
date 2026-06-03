@@ -1006,55 +1006,6 @@ async def test_similarity_report_returns_matches(client: AsyncClient, reviewer_h
     assert candidate["matched_entries"][0]["display_state"] == "shown"
 
 
-async def test_similarity_report_returns_matches_cross_project(client: AsyncClient, reviewer_headers: dict, monkeypatch: pytest.MonkeyPatch):
-    proj_source, proj_candidate, cmp = "SIM-Proj-Source", "SIM-Proj-Candidate", "SIM-Cmp-Cross"
-    source_res = await client.post(
-        WRITE_URL,
-        json=write_payload(proj_source, cmp, [flat_entry("name-source-key-cp", "VALUE:source-value-cp")]),
-        headers=reviewer_headers,
-    )
-    candidate_res = await client.post(
-        WRITE_URL,
-        json=write_payload(proj_candidate, cmp, [flat_entry("name-candidate-key-cp", "VALUE:candidate-value-cp")]),
-        headers=reviewer_headers,
-    )
-    source_uuid = source_res.json()["config_relation_uuid"]
-
-    async def fake_ssot_get_json(self, path: str, token: str, params: dict | None = None):
-        node_map = {
-            "name-source-key-cp": {"type": "name", "uuid": "name-source-key-cp", "name_val": "server.port"},
-            "name-candidate-key-cp": {"type": "name", "uuid": "name-candidate-key-cp", "name_val": "server.port.default"},
-            "source-value-cp": {"type": "value", "uuid": "source-value-cp", "val": "8080", "is_sensitive": False},
-            "candidate-value-cp": {"type": "value", "uuid": "candidate-value-cp", "val": "8081", "is_sensitive": False},
-        }
-
-        if path.startswith("/api/v1/node/"):
-            node_uuid = path.rsplit("/", 1)[-1]
-            return node_map.get(node_uuid)
-        if path in ("/api/v1/search", "/api/v1/search/value"):
-            return []
-        if path.startswith("/api/v1/truth/"):
-            return {"latestName": params.get("latestName") if params else None}
-        raise AssertionError(f"Unexpected SSOT path: {path}")
-
-    monkeypatch.setattr(ConfigTableService, "_ssot_get_json", fake_ssot_get_json)
-
-    res = await client.get(
-        f"/api/v1/config/{source_uuid}/review-similarity",
-        params={"limit": 5, "threshold": 0.25},
-        headers=reviewer_headers,
-    )
-    assert res.status_code == 200, res.text
-    body = res.json()
-    assert body["config_relation_uuid"] == source_uuid
-    assert body["candidate_count"] >= 1
-    assert any(c["config_relation_uuid"] == candidate_res.json()["config_relation_uuid"] for c in body["candidates"])
-    candidate = next(c for c in body["candidates"] if c["config_relation_uuid"] == candidate_res.json()["config_relation_uuid"])
-    assert candidate["matched_entries"]
-    assert candidate["matched_entries"][0]["source_key_alias"] == "server.port"
-    assert candidate["matched_entries"][0]["display_state"] == "shown"
-
-
 async def test_pending_reviews_endpoint_lists_pending_configs(client: AsyncClient, reviewer_headers: dict, auth_headers: dict):
     proj, cmp = "PEND-Proj-1", "PEND-Cmp-1"
     write_res = await client.post(
